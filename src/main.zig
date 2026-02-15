@@ -23,32 +23,16 @@ const Window_Height = 480;
 const sdl_log = std.log.scoped(.sdl);
 const gl_log = std.log.scoped(.gl);
 
-const vertex_shader_source =
-    \\#version 410 core
-    \\in vec4 a_Position;
-    \\in vec4 a_Color;
-    \\// Color output to pass to fragment shader
-    \\out vec4 v_Color;
-    \\void main()
-    \\{
-    \\  gl_Position = vec4(a_Position.x,a_Position.y,a_Position.z,a_Position.w);
-    \\  v_Color = a_Color;
-    \\}
-;
-const fragment_shader_source =
-    \\#version 410 core
-    \\in vec4 v_Color;
-    \\out vec4 f_Color;
-    \\void main()
-    \\{
-    \\    f_Color = v_Color;
-    \\}
-;
+const Vertex_Shader_Path = "src/vertex_shader.glsl";
+const Fragment_Shader_Path = "src/fragment_shader.glsl";
 
 const State = struct {
     window: *c.SDL_Window,
     screen_w: c_int,
     screen_h: c_int,
+
+    allocator: std.mem.Allocator,
+
     gl_ctx: c.SDL_GLContext,
     gl_procs: gl.ProcTable,
     mesh: TriangleMesh,
@@ -56,6 +40,8 @@ const State = struct {
     vbo: c_uint, // vertices
     ibo: c_uint, // indexes. Maps indices to vertices, to enable reusing vertex data.
     program: c_uint,
+    vertex_shader_source: []u8,
+    fragment_shader_source: []u8,
     fully_inited: bool,
 };
 
@@ -79,6 +65,9 @@ var state: State = .{
     .vao = undefined,
     .program = undefined,
     .mesh = undefined,
+    .allocator = undefined,
+    .fragment_shader_source = undefined,
+    .vertex_shader_source = undefined,
     .fully_inited = false,
 };
 
@@ -152,8 +141,8 @@ fn create_graphics_pipeline() !void {
     if (state.program == 0) return error.GlProgramFailed;
     errdefer gl.DeleteProgram(state.program);
 
-    const vertex_shader = compile_shader(gl.VERTEX_SHADER, vertex_shader_source);
-    const fragment_shader = compile_shader(gl.FRAGMENT_SHADER, fragment_shader_source);
+    const vertex_shader = compile_shader(gl.VERTEX_SHADER, state.vertex_shader_source);
+    const fragment_shader = compile_shader(gl.FRAGMENT_SHADER, state.fragment_shader_source);
     if (vertex_shader == 0) return error.GlCreateVertexShaderFailed;
     if (fragment_shader == 0) return error.GlCreateFragmentShaderFailed;
 
@@ -172,7 +161,8 @@ fn compile_shader(shader_type: comptime_int, shader_source: []const u8) c_uint {
         shader_obj = gl.CreateShader(gl.FRAGMENT_SHADER);
     }
 
-    gl.ShaderSource(shader_obj, 1, &.{shader_source.ptr}, &[_]c_int{@intCast(shader_source.len)});
+    std.debug.print("shader_len:{d}\n", .{shader_source.len});
+    gl.ShaderSource(shader_obj, 1, &.{shader_source.ptr}, &[1]c_int{@intCast(shader_source.len)});
     gl.CompileShader(shader_obj);
 
     return shader_obj;
@@ -228,6 +218,9 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     gl_log.info("Renderer:{s}", .{gl.GetString(gl.RENDERER) orelse "null"});
     gl_log.info("Version:{s}", .{gl.GetString(gl.VERSION) orelse "null"});
     gl_log.info("Shading language:{s}", .{gl.GetString(gl.SHADING_LANGUAGE_VERSION) orelse "null"});
+
+    try read_in_shader(gl.FRAGMENT_SHADER);
+    try read_in_shader(gl.VERTEX_SHADER);
 
     try create_graphics_pipeline();
     try vertex_specification();
@@ -305,7 +298,10 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
     _ = result catch |err| if (err == error.SdlError) {
         sdl_log.err("{s}\n", .{c.SDL_GetError()});
     };
+
     if (state.fully_inited) {
+        state.allocator.free(state.fragment_shader_source);
+        state.allocator.free(state.vertex_shader_source);
         gl.DeleteBuffers(1, (&state.vbo)[0..1]);
         //        gl.DeleteBuffers(1, (&state.ibo)[0..1]);
         gl.DeleteVertexArrays(1, (&state.vao)[0..1]);
@@ -321,8 +317,26 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
     c.SDL_DestroyWindow(state.window);
     c.SDL_Quit();
 }
+fn read_in_shader(shader_type: c_uint) !void {
+    const shader_path = if (shader_type == gl.VERTEX_SHADER) blk: {
+        break :blk Vertex_Shader_Path;
+    } else if (shader_type == gl.FRAGMENT_SHADER) blk_b: {
+        break :blk_b Fragment_Shader_Path;
+    } else unreachable;
+
+    const slice = try std.fs.cwd().readFileAlloc(state.allocator, shader_path, std.math.maxInt(usize));
+
+    if (shader_type == gl.VERTEX_SHADER) state.vertex_shader_source = slice;
+    if (shader_type == gl.FRAGMENT_SHADER) state.fragment_shader_source = slice;
+
+    std.debug.print("read@{s}:{s}\n", .{ shader_path, slice });
+}
 
 pub fn main() !u8 {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer if (gpa.deinit() == .leak) @panic("gpa leaked");
+    const allocator = gpa.allocator();
+    state.allocator = allocator;
     //   var w = std.fs.File.stdout().writer(&.{});
     //   const writer = &w.interface;
 
