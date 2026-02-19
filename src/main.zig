@@ -80,7 +80,7 @@ var state: State = .{
 };
 
 fn vertex_specification() !void {
-    const vertices: [3]Vertex = .{
+    const vertices: [6]Vertex = .{
         .{
             .position = .{ -0.5, -0.5, 0 },
             .color = .{ 1, 0, 0 },
@@ -93,9 +93,23 @@ fn vertex_specification() !void {
             .position = .{ 0, 0.5, 0 },
             .color = .{ 0, 1, 0 },
         },
+
+        .{
+            .position = .{ 0.5, -0.5, 0 },
+            .color = .{ 0, 0, 1 },
+        },
+        .{
+            .position = .{ 0.7, 0.5, 0 },
+            .color = .{ 1, 0, 0 },
+        },
+        .{
+            .position = .{ 0, 0.5, 0 },
+            .color = .{ 0, 1, 0 },
+        },
     };
 
-    const meshes: [1]Mesh = .{
+    const meshes: [2]Mesh = .{
+        Mesh{ .angle = 0, .origin = .{ 0, 0, 0 } },
         Mesh{ .angle = 0, .origin = .{ 0, 0, 0 } },
     };
 
@@ -126,9 +140,12 @@ fn vertex_specification() !void {
     gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert.?);
     defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
 
-    std.debug.print("len:{d} ; fancy:{d}\n", .{ state.vertices.?.len, @sizeOf(@TypeOf(state.vertices.?)) }); // prints 3 and 16
-    std.debug.print("elems:{any}\n", .{state.vertices.?});
-    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(state.vertices.?)), @ptrCast(state.vertices.?), gl.STATIC_DRAW);
+    gl.BufferData(
+        gl.ARRAY_BUFFER,
+        @intCast(state.vertices.?.len * @sizeOf(Vertex)),
+        @ptrCast(state.vertices.?.ptr),
+        gl.STATIC_DRAW,
+    );
     try check_gl_error();
 
     {
@@ -165,42 +182,43 @@ fn vertex_specification() !void {
         // zig fmt: on
     }
 
-    //    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh.?);
-    //    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(state.meshes.?)), @ptrCast(state.meshes.?), gl.STATIC_DRAW);
-    //    try check_gl_error();
-    //    {
-    //        const origin_attrib = gl.GetAttribLocation(state.program.?, "a_Origin");
-    //        if (origin_attrib == -1) return error.GlColorAttribInvalid;
-    //        gl.EnableVertexAttribArray(@intCast(origin_attrib));
-    //        // zig fmt: off
-    //        gl.VertexAttribPointer(
-    //            @intCast(origin_attrib),
-    //            @typeInfo(@FieldType(Mesh, "origin")).array.len,
-    //            gl.FLOAT,
-    //            gl.FALSE,
-    //            @sizeOf(Mesh),
-    //            @offsetOf(Mesh, "origin"),
-    //            );
-    //        // zig fmt: on
-    //    }
-    //    {
-    //        const angle_attrib = gl.GetAttribLocation(state.program.?, "a_Angle");
-    //        if (angle_attrib == -1) return error.GlColorAttribInvalid;
-    //        gl.EnableVertexAttribArray(@intCast(angle_attrib));
-    //        // zig fmt: off
-    //        gl.VertexAttribPointer(
-    //            @intCast(angle_attrib),
-    //            1,
-    //            gl.FLOAT,
-    //            gl.FALSE,
-    //            @sizeOf(Mesh),
-    //            @offsetOf(Mesh, "angle"),
-    //            );
-    //        // zig fmt: on
-    //    }
-    //
-    //    gl.VertexAttribDivisor(2, 1);
-    //    gl.VertexAttribDivisor(3, 1);
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh.?);
+    gl.BufferData(gl.ARRAY_BUFFER, @intCast(state.meshes.?.len * @sizeOf(Mesh)), @ptrCast(state.meshes.?), gl.STATIC_DRAW);
+    try check_gl_error();
+    {
+        const origin_attrib = gl.GetAttribLocation(state.program.?, "a_Origin");
+        if (origin_attrib == -1) return error.GlOriginAttribInvalid;
+        gl.EnableVertexAttribArray(@intCast(origin_attrib));
+        // zig fmt: off
+            gl.VertexAttribPointer(
+                @intCast(origin_attrib),
+                @typeInfo(@FieldType(Mesh, "origin")).array.len,
+                gl.FLOAT,
+                gl.FALSE,
+                @sizeOf(Mesh),
+                @offsetOf(Mesh, "origin"),
+                );
+            // zig fmt: on
+    }
+    try check_gl_error();
+    {
+        const angle_attrib = gl.GetAttribLocation(state.program.?, "a_Angle");
+        if (angle_attrib == -1) return error.GlAngleAttribInvalid;
+        gl.EnableVertexAttribArray(@intCast(angle_attrib));
+        // zig fmt: off
+            gl.VertexAttribPointer(
+                @intCast(angle_attrib),
+                1,
+                gl.FLOAT,
+                gl.FALSE,
+                @sizeOf(Mesh),
+                @offsetOf(Mesh, "angle"),
+                );
+            // zig fmt: on
+    }
+
+    gl.VertexAttribDivisor(2, 1);
+    gl.VertexAttribDivisor(3, 1);
 }
 
 fn create_graphics_pipeline() !void {
@@ -312,65 +330,29 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
     try check_gl_error();
+    try errify(c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h));
     gl.Disable(gl.DEPTH_TEST);
     gl.Disable(gl.CULL_FACE);
     gl.Viewport(0, 0, state.screen_w, state.screen_h);
 
-    //C = (1 − |2L − 1|) × S
-    //X = C × (1 − |(H × 6 mod 2) − 1|)
-    //m = L − C/2
-    const hue: f32 = @floatFromInt(@mod((@divTrunc(std.time.milliTimestamp(), 100)), 360));
-    // std.debug.print("hue:{d}\n", .{hue});
+    state.meshes.?[0].angle += 2.3;
+    state.meshes.?[1].angle -= 2.3;
 
-    const c_hsv = (1.0 - @abs(2.0 * Luminance - 1.0)) * Saturation;
-    const x_hsv = c_hsv * (1 - @abs(@mod((hue / 60) * 6.0, 2.0)));
-    const m_hsv = Luminance - c_hsv / 2.0;
-
-    var red: f32, var green: f32, var blue: f32 = blk: {
-        if (hue < 60.0) {
-            break :blk .{ c_hsv, x_hsv, 0 };
-        } else if (hue < 120) {
-            break :blk .{ x_hsv, c_hsv, 0 };
-        } else if (hue < 180) {
-            break :blk .{ 0, c_hsv, x_hsv };
-        } else if (hue < 240) {
-            break :blk .{ 0, x_hsv, c_hsv };
-        } else if (hue < 300) {
-            break :blk .{ x_hsv, 0, c_hsv };
-        } else if (hue <= 360) {
-            break :blk .{ c_hsv, 0, x_hsv };
-        } else {
-            break :blk .{ c_hsv, x_hsv, 0 };
-        }
-    };
-
-    red = (red + m_hsv);
-    green = (green + m_hsv);
-    blue = (blue + m_hsv);
-    state.meshes.?[0].angle += 10;
-    //std.debug.print("r:{d} g:{d} b:{d}\n", .{ red, green, blue });
-
-    red = 100;
-    green = 100;
-    blue = 100;
-    gl.ClearColor(red, green, blue, 1);
+    gl.ClearColor(0.1, 0.1, 0.1, 1);
     gl.Clear(gl.COLOR_BUFFER_BIT);
 
     gl.UseProgram(state.program.?);
     try check_gl_error();
 
     gl.BindVertexArray(state.vao.?);
-    //  gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh.?);
-    //   try check_gl_error();
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh.?);
+    try check_gl_error();
 
-    //std.debug.print("meshes:{any}\n", .{state.meshes.?});
-    //std.debug.print("vertices:{any}\n", .{state.vertices.?});
-
-    //    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @sizeOf(@TypeOf(state.meshes.?)), @ptrCast(state.meshes.?));
+    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.meshes.?.len * @sizeOf(Mesh)), @ptrCast(state.meshes.?));
     gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert.?);
     try check_gl_error();
 
-    gl.DrawArrays(gl.TRIANGLES, 0, 3);
+    gl.DrawArraysInstanced(gl.TRIANGLES, 0, 6, 1);
 
     try errify(c.SDL_GL_SwapWindow(state.window.?));
     try check_gl_error();
