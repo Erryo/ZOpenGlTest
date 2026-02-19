@@ -23,8 +23,8 @@ const Window_Height = 480;
 const sdl_log = std.log.scoped(.sdl);
 const gl_log = std.log.scoped(.gl);
 
-const Vertex_Shader_Path = "src/vertex_shader.glsl";
-const Fragment_Shader_Path = "src/fragment_shader.glsl";
+const Vertex_Shader_Path = "shaders/vertex_shader.glsl";
+const Fragment_Shader_Path = "shaders/fragment_shader.glsl";
 
 const State = struct {
     window: *c.SDL_Window,
@@ -35,9 +35,10 @@ const State = struct {
 
     gl_ctx: c.SDL_GLContext,
     gl_procs: gl.ProcTable,
-    mesh: TriangleMesh,
+    triangle: Triangle,
     vao: c_uint, // alignment of the vertecies in vbo
-    vbo: c_uint, // vertices
+    vbo_vert: c_uint, // vertices
+    vbo_mesh: c_uint, // mesh
     ibo: c_uint, // indexes. Maps indices to vertices, to enable reusing vertex data.
     program: c_uint,
     vertex_shader_source: []u8,
@@ -45,10 +46,16 @@ const State = struct {
     fully_inited: bool,
 };
 
-const TriangleMesh = struct {
+const Triangle = struct {
+    mesh: TriangleMesh,
     vertices: [3]Vertex,
-    indices: [6]u8,
 };
+
+const TriangleMesh = struct {
+    origin: [3]f32,
+    angle: f32,
+};
+
 const Vertex = extern struct {
     position: [3]f32,
     color: [3]f32,
@@ -60,11 +67,12 @@ var state: State = .{
     .screen_h = Window_Height,
     .gl_ctx = undefined,
     .gl_procs = undefined,
-    .vbo = undefined,
+    .vbo_mesh = undefined,
+    .vbo_vert = undefined,
     .ibo = undefined,
     .vao = undefined,
     .program = undefined,
-    .mesh = undefined,
+    .triangle = undefined,
     .allocator = undefined,
     .fragment_shader_source = undefined,
     .vertex_shader_source = undefined,
@@ -72,34 +80,40 @@ var state: State = .{
 };
 
 fn vertex_specification() !void {
-    const triangle_mesh: TriangleMesh = .{
-        // zig fmt: off
-    .vertices =  [3]Vertex{
-        .{.position = .{-0.5,-0.5,0}, .color = .{0,1,0},},
-        .{.position = .{0,0.5,0}, .color = .{0,1,0},},
-        .{.position = .{0.5,-0.5,0}, .color = .{0,1,0},},
-    },
-    // zig fmt: on
-        .indices = .{
-            0, 0, 0,
-            0, 0, 0,
+    const triangle: Triangle = .{
+        .mesh = .{ .angle = 0.0, .origin = .{ 0, 0, 0.0 } },
+        .vertices = [3]Vertex{
+            .{
+                .position = .{ -0.5, -0.5, 0 },
+                .color = .{ 1, 0, 0 },
+            },
+            .{
+                .position = .{ 0, 0.5, 0 },
+                .color = .{ 0, 1, 0 },
+            },
+            .{
+                .position = .{ 0.5, -0.5, 0 },
+                .color = .{ 0, 0, 1 },
+            },
         },
     };
 
-    state.mesh = triangle_mesh;
+    state.triangle = triangle;
 
     gl.GenVertexArrays(1, (&state.vao)[0..1]);
     gl.BindVertexArray(state.vao);
     defer gl.BindVertexArray(0);
 
-    gl.GenBuffers(1, (&state.vbo)[0..1]);
-    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo);
+    gl.GenBuffers(1, (&state.vbo_vert)[0..1]);
+    gl.GenBuffers(1, (&state.vbo_mesh)[0..1]);
+
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert);
     defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
 
-    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(state.mesh.vertices)), &state.mesh.vertices, gl.STATIC_DRAW);
+    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(state.triangle.vertices)), &state.triangle.vertices, gl.STATIC_DRAW);
 
     {
-        const position_attrib = 0; //gl.GetAttribLocation(state.program, "a_Position");
+        const position_attrib = gl.GetAttribLocation(state.program, "a_Position");
         if (position_attrib == -1) return error.GlPositionAttribInvalid;
         gl.EnableVertexAttribArray(@intCast(position_attrib));
 
@@ -108,16 +122,15 @@ fn vertex_specification() !void {
             @intCast(position_attrib),
             @typeInfo(@FieldType(Vertex, "position")).array.len,
             gl.FLOAT,
-            gl.TRUE,
+            gl.FALSE,
             @sizeOf(Vertex),
             @offsetOf(Vertex, "position"),
             );
         // zig fmt: on
-
     }
 
     {
-        const color_attrib = 1; //gl.GetAttribLocation(state.program, "a_Color");
+        const color_attrib = gl.GetAttribLocation(state.program, "a_Color");
         if (color_attrib == -1) return error.GlColorAttribInvalid;
 
         gl.EnableVertexAttribArray(@intCast(color_attrib));
@@ -126,9 +139,42 @@ fn vertex_specification() !void {
             @intCast(color_attrib),
             @typeInfo(@FieldType(Vertex, "color")).array.len,
             gl.FLOAT,
-            gl.TRUE,
+            gl.FALSE,
             @sizeOf(Vertex),
             @offsetOf(Vertex, "color"),
+            );
+        // zig fmt: on
+    }
+
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh);
+    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(state.triangle.mesh)), &state.triangle.mesh, gl.STATIC_DRAW);
+    {
+        const origin_attrib = gl.GetAttribLocation(state.program, "a_Origin");
+        if (origin_attrib == -1) return error.GlColorAttribInvalid;
+        gl.EnableVertexAttribArray(@intCast(origin_attrib));
+        // zig fmt: off
+        gl.VertexAttribPointer(
+            @intCast(origin_attrib),
+            @typeInfo(@FieldType(TriangleMesh, "origin")).array.len,
+            gl.FLOAT,
+            gl.FALSE,
+            @sizeOf(TriangleMesh),
+            @offsetOf(TriangleMesh, "origin"),
+            );
+        // zig fmt: on
+    }
+    {
+        const angle_attrib = gl.GetAttribLocation(state.program, "a_Angle");
+        if (angle_attrib == -1) return error.GlColorAttribInvalid;
+        gl.EnableVertexAttribArray(@intCast(angle_attrib));
+        // zig fmt: off
+        gl.VertexAttribPointer(
+            @intCast(angle_attrib),
+            @sizeOf(@FieldType(TriangleMesh, "angle")),
+            gl.FLOAT,
+            gl.FALSE,
+            @sizeOf(TriangleMesh),
+            @offsetOf(TriangleMesh, "angle"),
             );
         // zig fmt: on
     }
@@ -142,6 +188,7 @@ fn create_graphics_pipeline() !void {
     errdefer gl.DeleteProgram(state.program);
 
     const vertex_shader = compile_shader(gl.VERTEX_SHADER, state.vertex_shader_source);
+
     const fragment_shader = compile_shader(gl.FRAGMENT_SHADER, state.fragment_shader_source);
     if (vertex_shader == 0) return error.GlCreateVertexShaderFailed;
     if (fragment_shader == 0) return error.GlCreateFragmentShaderFailed;
@@ -150,6 +197,11 @@ fn create_graphics_pipeline() !void {
     gl.AttachShader(state.program, fragment_shader);
     gl.LinkProgram(state.program);
     gl.ValidateProgram(state.program);
+
+    gl.DetachShader(state.program, vertex_shader);
+    gl.DeleteShader(vertex_shader);
+    gl.DetachShader(state.program, fragment_shader);
+    gl.DeleteShader(fragment_shader);
 }
 
 fn compile_shader(shader_type: comptime_int, shader_source: []const u8) c_uint {
@@ -165,6 +217,14 @@ fn compile_shader(shader_type: comptime_int, shader_source: []const u8) c_uint {
     gl.ShaderSource(shader_obj, 1, &.{shader_source.ptr}, &[1]c_int{@intCast(shader_source.len)});
     gl.CompileShader(shader_obj);
 
+    var success: c_int = 0;
+    gl.GetShaderiv(shader_obj, gl.COMPILE_STATUS, (&success)[0..1]);
+    if (success == 0) {
+        var log: [512]u8 = undefined;
+        var len: c_int = 0;
+        gl.GetShaderInfoLog(shader_obj, log.len, &len, &log);
+        std.debug.print("Shader error:\n{s}\n", .{log[0..@intCast(len)]});
+    }
     return shader_obj;
 }
 fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
@@ -238,7 +298,7 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     //X = C × (1 − |(H × 6 mod 2) − 1|)
     //m = L − C/2
     const hue: f32 = @floatFromInt(@mod((@divTrunc(std.time.milliTimestamp(), 100)), 360));
-    std.debug.print("hue:{d}\n", .{hue});
+    // std.debug.print("hue:{d}\n", .{hue});
 
     const c_hsv = (1.0 - @abs(2.0 * Luminance - 1.0)) * Saturation;
     const x_hsv = c_hsv * (1 - @abs(@mod((hue / 60) * 6.0, 2.0)));
@@ -265,7 +325,8 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     red = (red + m_hsv);
     green = (green + m_hsv);
     blue = (blue + m_hsv);
-    std.debug.print("r:{d} g:{d} b:{d}\n", .{ red, green, blue });
+    state.triangle.mesh.angle += 10;
+    //std.debug.print("r:{d} g:{d} b:{d}\n", .{ red, green, blue });
 
     gl.ClearColor(red, green, blue, 1);
     gl.Clear(gl.COLOR_BUFFER_BIT);
@@ -273,7 +334,7 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     gl.UseProgram(state.program);
 
     gl.BindVertexArray(state.vao);
-    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo);
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert);
 
     gl.DrawArrays(gl.TRIANGLES, 0, 3);
 
@@ -302,9 +363,10 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
     if (state.fully_inited) {
         state.allocator.free(state.fragment_shader_source);
         state.allocator.free(state.vertex_shader_source);
-        gl.DeleteBuffers(1, (&state.vbo)[0..1]);
-        //        gl.DeleteBuffers(1, (&state.ibo)[0..1]);
+        gl.DeleteBuffers(1, (&state.vbo_vert)[0..1]);
         gl.DeleteVertexArrays(1, (&state.vao)[0..1]);
+
+        //        gl.DeleteBuffers(1, (&state.ibo)[0..1]);
         gl.DeleteProgram(state.program);
         gl.makeProcTableCurrent(null);
         errify(c.SDL_GL_MakeCurrent(state.window, null)) catch {};
@@ -328,8 +390,6 @@ fn read_in_shader(shader_type: c_uint) !void {
 
     if (shader_type == gl.VERTEX_SHADER) state.vertex_shader_source = slice;
     if (shader_type == gl.FRAGMENT_SHADER) state.fragment_shader_source = slice;
-
-    std.debug.print("read@{s}:{s}\n", .{ shader_path, slice });
 }
 
 pub fn main() !u8 {
