@@ -170,7 +170,7 @@ fn vertex_specification() !void {
         // zig fmt: off
         gl.VertexAttribPointer(
             @intCast(angle_attrib),
-            @sizeOf(@FieldType(TriangleMesh, "angle")),
+            1,
             gl.FLOAT,
             gl.FALSE,
             @sizeOf(TriangleMesh),
@@ -178,6 +178,9 @@ fn vertex_specification() !void {
             );
         // zig fmt: on
     }
+
+    gl.VertexAttribDivisor(2, 1);
+    gl.VertexAttribDivisor(3, 1);
 
     state.fully_inited = true;
 }
@@ -334,9 +337,11 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     gl.UseProgram(state.program);
 
     gl.BindVertexArray(state.vao);
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh);
+    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @sizeOf(@TypeOf(state.triangle.mesh)), &state.triangle.mesh);
     gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert);
 
-    gl.DrawArrays(gl.TRIANGLES, 0, 3);
+    gl.DrawArraysInstanced(gl.TRIANGLES, 0, 3, 1);
 
     try errify(c.SDL_GL_SwapWindow(state.window));
     return c.SDL_APP_CONTINUE;
