@@ -127,6 +127,7 @@ fn vertex_specification() !void {
     defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
 
     std.debug.print("len:{d} ; fancy:{d}\n", .{ state.vertices.?.len, @sizeOf(@TypeOf(state.vertices.?)) }); // prints 3 and 16
+    std.debug.print("elems:{any}\n", .{state.vertices.?});
     gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(state.vertices.?)), @ptrCast(state.vertices.?), gl.STATIC_DRAW);
     try check_gl_error();
 

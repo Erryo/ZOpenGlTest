@@ -1,0 +1,27 @@
+pub const packages = struct {
+    pub const @"sdl-0.3.1+3.2.24-7uIn9L9AfwFQf90JcTh3Slw__ZA8SEomk6fQI9F8ItY0" = struct {
+        pub const build_root = "/home/infy/.cache/zig/p/sdl-0.3.1+3.2.24-7uIn9L9AfwFQf90JcTh3Slw__ZA8SEomk6fQI9F8ItY0";
+        pub const build_zig = @import("sdl-0.3.1+3.2.24-7uIn9L9AfwFQf90JcTh3Slw__ZA8SEomk6fQI9F8ItY0");
+        pub const deps: []const struct { []const u8, []const u8 } = &.{
+            .{ "sdl_linux_deps", "sdl_linux_deps-0.0.0-Vy5_h4AlfwBtG7MIPe7ZNUANhmYLek_SA140uYk9SrED" },
+        };
+    };
+    pub const @"sdl_linux_deps-0.0.0-Vy5_h4AlfwBtG7MIPe7ZNUANhmYLek_SA140uYk9SrED" = struct {
+        pub const available = true;
+        pub const build_root = "/home/infy/.cache/zig/p/sdl_linux_deps-0.0.0-Vy5_h4AlfwBtG7MIPe7ZNUANhmYLek_SA140uYk9SrED";
+        pub const build_zig = @import("sdl_linux_deps-0.0.0-Vy5_h4AlfwBtG7MIPe7ZNUANhmYLek_SA140uYk9SrED");
+        pub const deps: []const struct { []const u8, []const u8 } = &.{
+        };
+    };
+    pub const @"zigglgen-0.4.0-bmyqLV6PLwAt0VCiGVgz6kZ448zaiTix2Z8MXEEuN4Vi" = struct {
+        pub const build_root = "/home/infy/.cache/zig/p/zigglgen-0.4.0-bmyqLV6PLwAt0VCiGVgz6kZ448zaiTix2Z8MXEEuN4Vi";
+        pub const build_zig = @import("zigglgen-0.4.0-bmyqLV6PLwAt0VCiGVgz6kZ448zaiTix2Z8MXEEuN4Vi");
+        pub const deps: []const struct { []const u8, []const u8 } = &.{
+        };
+    };
+};
+
+pub const root_deps: []const struct { []const u8, []const u8 } = &.{
+    .{ "sdl", "sdl-0.3.1+3.2.24-7uIn9L9AfwFQf90JcTh3Slw__ZA8SEomk6fQI9F8ItY0" },
+    .{ "zigglgen", "zigglgen-0.4.0-bmyqLV6PLwAt0VCiGVgz6kZ448zaiTix2Z8MXEEuN4Vi" },
+};
