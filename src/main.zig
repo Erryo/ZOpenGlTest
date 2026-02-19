@@ -30,26 +30,25 @@ const MeshList = std.ArrayList(Mesh);
 const VertexList = std.ArrayList(Vertex);
 
 const State = struct {
-    window: *c.SDL_Window,
+    window: ?*c.SDL_Window,
     screen_w: c_int,
     screen_h: c_int,
 
     allocator: std.mem.Allocator,
 
     gl_ctx: c.SDL_GLContext,
-    gl_procs: gl.ProcTable,
+    gl_procs: ?gl.ProcTable,
 
-    meshes: MeshList,
-    vertices: VertexList,
+    meshes: ?MeshList,
+    vertices: ?VertexList,
 
-    vao: c_uint, // alignment of the vertecies in vbo
-    vbo_vert: c_uint, // vertices
-    vbo_mesh: c_uint, // mesh
-    ibo: c_uint, // indexes. Maps indices to vertices, to enable reusing vertex data.
-    program: c_uint,
-    vertex_shader_source: []u8,
-    fragment_shader_source: []u8,
-    fully_inited: bool,
+    vao: ?c_uint, // alignment of the vertecies in vbo
+    vbo_vert: ?c_uint, // vertices
+    vbo_mesh: ?c_uint, // mesh
+    ibo: ?c_uint, // indexes. Maps indices to vertices, to enable reusing vertex data.
+    program: ?c_uint,
+    vertex_shader_source: ?[]u8,
+    fragment_shader_source: ?[]u8,
 };
 
 const Mesh = struct {
@@ -63,22 +62,21 @@ const Vertex = extern struct {
 };
 
 var state: State = .{
-    .window = undefined,
+    .window = null,
     .screen_w = Window_Width,
     .screen_h = Window_Height,
-    .gl_ctx = undefined,
-    .gl_procs = undefined,
-    .vbo_mesh = undefined,
-    .vbo_vert = undefined,
-    .ibo = undefined,
-    .vao = undefined,
-    .program = undefined,
-    .vertices = undefined,
-    .meshes = undefined,
+    .gl_ctx = null,
+    .gl_procs = null,
+    .vbo_mesh = null,
+    .vbo_vert = null,
+    .ibo = null,
+    .vao = null,
+    .program = null,
+    .vertices = null,
+    .meshes = null,
     .allocator = undefined,
-    .fragment_shader_source = undefined,
-    .vertex_shader_source = undefined,
-    .fully_inited = false,
+    .fragment_shader_source = null,
+    .vertex_shader_source = null,
 };
 
 fn vertex_specification() !void {
@@ -100,23 +98,29 @@ fn vertex_specification() !void {
     const meshes: [1]Mesh = .{
         Mesh{ .angle = 0, .origin = .{ 0, 0, 0 } },
     };
-    try state.vertices.appendSlice(state.allocator, vertices[0..]);
-    try state.meshes.appendSlice(state.allocator, meshes[0..]);
+    try state.vertices.?.appendSlice(state.allocator, vertices[0..]);
+    try state.meshes.?.appendSlice(state.allocator, meshes[0..]);
 
-    gl.GenVertexArrays(1, (&state.vao)[0..1]);
-    gl.BindVertexArray(state.vao);
+    state.vao = undefined;
+    gl.GenVertexArrays(1, (&state.vao.?)[0..1]);
+    gl.BindVertexArray(state.vao.?);
     defer gl.BindVertexArray(0);
 
-    gl.GenBuffers(1, (&state.vbo_vert)[0..1]);
-    gl.GenBuffers(1, (&state.vbo_mesh)[0..1]);
+    state.vbo_vert = undefined;
+    gl.GenBuffers(1, (&state.vbo_vert.?)[0..1]);
+    state.vbo_mesh = undefined;
+    gl.GenBuffers(1, (&state.vbo_mesh.?)[0..1]);
 
-    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert);
+    try check_gl_error();
+
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert.?);
     defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
 
-    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(state.vertices.items)), state.vertices.items.ptr, gl.STATIC_DRAW);
+    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(state.vertices.?.items)), state.vertices.?.items.ptr, gl.STATIC_DRAW);
+    try check_gl_error();
 
     {
-        const position_attrib = gl.GetAttribLocation(state.program, "a_Position");
+        const position_attrib = gl.GetAttribLocation(state.program.?, "a_Position");
         if (position_attrib == -1) return error.GlPositionAttribInvalid;
         gl.EnableVertexAttribArray(@intCast(position_attrib));
 
@@ -133,7 +137,7 @@ fn vertex_specification() !void {
     }
 
     {
-        const color_attrib = gl.GetAttribLocation(state.program, "a_Color");
+        const color_attrib = gl.GetAttribLocation(state.program.?, "a_Color");
         if (color_attrib == -1) return error.GlColorAttribInvalid;
 
         gl.EnableVertexAttribArray(@intCast(color_attrib));
@@ -149,10 +153,11 @@ fn vertex_specification() !void {
         // zig fmt: on
     }
 
-    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh);
-    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(state.meshes.items)), state.meshes.items.ptr, gl.STATIC_DRAW);
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh.?);
+    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(state.meshes.?.items)), state.meshes.?.items.ptr, gl.STATIC_DRAW);
+    try check_gl_error();
     {
-        const origin_attrib = gl.GetAttribLocation(state.program, "a_Origin");
+        const origin_attrib = gl.GetAttribLocation(state.program.?, "a_Origin");
         if (origin_attrib == -1) return error.GlColorAttribInvalid;
         gl.EnableVertexAttribArray(@intCast(origin_attrib));
         // zig fmt: off
@@ -167,7 +172,7 @@ fn vertex_specification() !void {
         // zig fmt: on
     }
     {
-        const angle_attrib = gl.GetAttribLocation(state.program, "a_Angle");
+        const angle_attrib = gl.GetAttribLocation(state.program.?, "a_Angle");
         if (angle_attrib == -1) return error.GlColorAttribInvalid;
         gl.EnableVertexAttribArray(@intCast(angle_attrib));
         // zig fmt: off
@@ -184,29 +189,26 @@ fn vertex_specification() !void {
 
     gl.VertexAttribDivisor(2, 1);
     gl.VertexAttribDivisor(3, 1);
-
-    state.fully_inited = true;
 }
 
 fn create_graphics_pipeline() !void {
     state.program = gl.CreateProgram();
     if (state.program == 0) return error.GlProgramFailed;
-    errdefer gl.DeleteProgram(state.program);
 
-    const vertex_shader = compile_shader(gl.VERTEX_SHADER, state.vertex_shader_source);
+    const vertex_shader = compile_shader(gl.VERTEX_SHADER, state.vertex_shader_source.?);
 
-    const fragment_shader = compile_shader(gl.FRAGMENT_SHADER, state.fragment_shader_source);
+    const fragment_shader = compile_shader(gl.FRAGMENT_SHADER, state.fragment_shader_source.?);
     if (vertex_shader == 0) return error.GlCreateVertexShaderFailed;
     if (fragment_shader == 0) return error.GlCreateFragmentShaderFailed;
 
-    gl.AttachShader(state.program, vertex_shader);
-    gl.AttachShader(state.program, fragment_shader);
-    gl.LinkProgram(state.program);
-    gl.ValidateProgram(state.program);
+    gl.AttachShader(state.program.?, vertex_shader);
+    gl.AttachShader(state.program.?, fragment_shader);
+    gl.LinkProgram(state.program.?);
+    gl.ValidateProgram(state.program.?);
 
-    gl.DetachShader(state.program, vertex_shader);
+    gl.DetachShader(state.program.?, vertex_shader);
     gl.DeleteShader(vertex_shader);
-    gl.DetachShader(state.program, fragment_shader);
+    gl.DetachShader(state.program.?, fragment_shader);
     gl.DeleteShader(fragment_shader);
 }
 
@@ -271,16 +273,17 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     try errify(c.SDL_GL_SetAttribute(c.SDL_GL_DEPTH_SIZE, 24));
 
     state.window = try errify(c.SDL_CreateWindow("Test", Window_Width, Window_Height, c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_OPENGL));
-    errdefer c.SDL_DestroyWindow(state.window);
 
     state.gl_ctx = try errify(c.SDL_GL_CreateContext(state.window));
     try errify(c.SDL_GL_MakeCurrent(state.window, state.gl_ctx));
-    errdefer errify(c.SDL_GL_MakeCurrent(state.window, null)) catch {};
 
-    if (!state.gl_procs.init(&c.SDL_GL_GetProcAddress)) return error.GlInitFailed;
+    state.gl_procs = undefined;
+    if (!state.gl_procs.?.init(&c.SDL_GL_GetProcAddress)) {
+        state.gl_procs = null;
 
-    gl.makeProcTableCurrent(&state.gl_procs);
-    errdefer gl.makeProcTableCurrent(null);
+        return error.GlInitFailed;
+    }
+    gl.makeProcTableCurrent(&state.gl_procs.?);
 
     gl_log.info("Vendor:{s}", .{gl.GetString(gl.VENDOR) orelse "null"});
     gl_log.info("Renderer:{s}", .{gl.GetString(gl.RENDERER) orelse "null"});
@@ -298,6 +301,7 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 
 fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
+    try check_gl_error();
     gl.Disable(gl.DEPTH_TEST);
     gl.Disable(gl.CULL_FACE);
     gl.Viewport(0, 0, state.screen_w, state.screen_h);
@@ -333,22 +337,26 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     red = (red + m_hsv);
     green = (green + m_hsv);
     blue = (blue + m_hsv);
-    state.meshes.items[0].angle += 10;
+    state.meshes.?.items[0].angle += 10;
     //std.debug.print("r:{d} g:{d} b:{d}\n", .{ red, green, blue });
 
     gl.ClearColor(red, green, blue, 1);
     gl.Clear(gl.COLOR_BUFFER_BIT);
 
-    gl.UseProgram(state.program);
+    gl.UseProgram(state.program.?);
+    try check_gl_error();
 
-    gl.BindVertexArray(state.vao);
-    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh);
-    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @sizeOf(@TypeOf(state.meshes.items)), state.meshes.items.ptr);
-    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert);
+    gl.BindVertexArray(state.vao.?);
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh.?);
+    try check_gl_error();
+    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @sizeOf(@TypeOf(state.meshes.?.items)), state.meshes.?.items.ptr);
+    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert.?);
+    try check_gl_error();
 
     gl.DrawArraysInstanced(gl.TRIANGLES, 0, 3, 1);
 
-    try errify(c.SDL_GL_SwapWindow(state.window));
+    try errify(c.SDL_GL_SwapWindow(state.window.?));
+    try check_gl_error();
     return c.SDL_APP_CONTINUE;
 }
 
@@ -370,27 +378,56 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
         sdl_log.err("{s}\n", .{c.SDL_GetError()});
     };
 
-    if (state.fully_inited) {
-        state.allocator.free(state.fragment_shader_source);
-        state.allocator.free(state.vertex_shader_source);
-        gl.DeleteBuffers(1, (&state.vbo_vert)[0..1]);
-        gl.DeleteBuffers(1, (&state.vbo_mesh)[0..1]);
-        gl.DeleteVertexArrays(1, (&state.vao)[0..1]);
-
-        //        gl.DeleteBuffers(1, (&state.ibo)[0..1]);
-        gl.DeleteProgram(state.program);
+    if (state.fragment_shader_source != null)
+        state.allocator.free(state.fragment_shader_source.?);
+    if (state.vertex_shader_source != null)
+        state.allocator.free(state.vertex_shader_source.?);
+    if (state.vbo_vert != null)
+        gl.DeleteBuffers(1, (&state.vbo_vert.?)[0..1]);
+    if (state.vbo_mesh != null)
+        gl.DeleteBuffers(1, (&state.vbo_mesh.?)[0..1]);
+    if (state.vao != null)
+        gl.DeleteVertexArrays(1, (&state.vao.?)[0..1]);
+    if (state.ibo != null)
+        gl.DeleteBuffers(1, (&state.ibo.?)[0..1]);
+    if (state.program != null)
+        gl.DeleteProgram(state.program.?);
+    if (state.gl_procs != null)
         gl.makeProcTableCurrent(null);
-        errify(c.SDL_GL_MakeCurrent(state.window, null)) catch {};
-        errify(c.SDL_GL_DestroyContext(state.gl_ctx)) catch {
+    if (state.gl_ctx != null)
+        errify(c.SDL_GL_MakeCurrent(state.window.?, null)) catch {};
+    if (state.gl_ctx != null)
+        errify(c.SDL_GL_DestroyContext(state.gl_ctx.?)) catch {
             gl_log.err("failed to destory context\n", .{});
         };
-        c.SDL_DestroyWindow(state.window);
-        state.fully_inited = false;
-    }
-    state.meshes.deinit(state.allocator);
-    state.vertices.deinit(state.allocator);
-    c.SDL_DestroyWindow(state.window);
+
+    if (state.window != null)
+        c.SDL_DestroyWindow(state.window.?);
+    if (state.meshes != null)
+        state.meshes.?.deinit(state.allocator);
+    if (state.vertices != null)
+        state.vertices.?.deinit(state.allocator);
+
+    if (state.window != null)
+        c.SDL_DestroyWindow(state.window.?);
     c.SDL_Quit();
+    state = .{
+        .window = null,
+        .screen_w = Window_Width,
+        .screen_h = Window_Height,
+        .gl_ctx = null,
+        .gl_procs = null,
+        .vbo_mesh = null,
+        .vbo_vert = null,
+        .ibo = null,
+        .vao = null,
+        .program = null,
+        .vertices = null,
+        .meshes = null,
+        .allocator = state.allocator,
+        .fragment_shader_source = null,
+        .vertex_shader_source = null,
+    };
 }
 fn read_in_shader(shader_type: c_uint) !void {
     const shader_path = if (shader_type == gl.VERTEX_SHADER) blk: {
@@ -466,6 +503,18 @@ inline fn errify(value: anytype) error{SdlError}!switch (@typeInfo(@TypeOf(value
 }
 
 var app_err: ErrorStore = .{};
+
+fn check_gl_error() !void {
+    var errored: bool = false;
+    while (true) {
+        const err = gl.GetError();
+
+        if (err == gl.NO_ERROR) break;
+        errored = true;
+        std.debug.print("err:{d}\n", .{err});
+    }
+    return if (errored) error.GlError else {};
+}
 
 const ErrorStore = struct {
     const status_not_stored = 0;
