@@ -19,6 +19,6 @@ void main()
     p.xy = rot * p.xy;
     p += a_Origin;
 
-    gl_Position = vec4(p, 1.0);
+    gl_Position = vec4(p*0.5, 1.0);
     v_Color = vec4(a_Color, 1.0);
 }

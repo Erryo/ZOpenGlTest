@@ -74,37 +74,97 @@ var state: State = .{
 };
 
 fn vertex_specification() !void {
-    const vertices: [4]Vertex = .{
+    const vertices = [_]Vertex{
         .{
-            .position = .{ -0.5, -0.5, 0 },
+            .position = .{ -0.5, 0.25, 0 },
             .color = .{ 1, 0, 0 },
-            .origin = .{ 0, 0, 0 },
+            .origin = .{ 0, 0.5, 0 },
             .angle = 0,
         },
         .{
-            .position = .{ 0.5, -0.5, 0 },
+            .position = .{ -0.5, -0.25, 0 },
+            .color = .{ 1, 0, 0 },
+            .origin = .{ 0, 0.5, 0 },
+            .angle = 0,
+        },
+
+        .{
+            .position = .{ 0, -0.5, 0 },
+            .color = .{ 1, 0, 0 },
+            .origin = .{ 0, 0.5, 0 },
+            .angle = 0,
+        },
+
+        .{ // Origin
+            .position = .{ 0.0, 0.0, 0 },
+            .color = .{ 1, 0, 0 },
+            .origin = .{ 0, 0.5, 0 },
+            .angle = 0,
+        },
+        // Right
+
+        .{
+            .position = .{ 0, -0.5, 0 },
             .color = .{ 0, 0, 1 },
-            .origin = .{ 0, 0, 0 },
+            .origin = .{ 0, 0.5, 0 },
             .angle = 0,
         },
         .{
-            .position = .{ -0.5, 0.5, 0 },
+            .position = .{ 0.5, -0.25, 0 },
+            .color = .{ 0, 0, 1 },
+            .origin = .{ 0, 0.5, 0 },
+            .angle = 0,
+        },
+        .{
+            .position = .{ 0.5, 0.25, 0 },
+            .color = .{ 0, 0, 1 },
+            .origin = .{ 0, 0.5, 0 },
+            .angle = 0,
+        },
+
+        .{ // Origin blue
+            .position = .{ 0.0, 0.0, 0 },
+            .color = .{ 0, 0, 1 },
+            .origin = .{ 0, 0.5, 0 },
+            .angle = 0,
+        },
+
+        // Top
+        .{
+            .position = .{ -0.5, 0.25, 0 },
             .color = .{ 0, 1, 0 },
-            .origin = .{ 0, 0, 0 },
+            .origin = .{ 0, 0.5, 0 },
             .angle = 0,
         },
         .{
-            .position = .{ 0.5, 0.5, 0 },
-            .color = .{ 1, 0, 0 },
-            .origin = .{ 0, 0, 0 },
+            .position = .{ 0, 0.5, 0 },
+            .color = .{ 0, 1, 0 },
+            .origin = .{ 0, 0.5, 0 },
+            .angle = 0,
+        },
+        .{
+            .position = .{ 0.5, 0.25, 0 },
+            .color = .{ 0, 1, 0 },
+            .origin = .{ 0, 0.5, 0 },
+            .angle = 0,
+        },
+
+        .{ // Origin blue
+            .position = .{ 0.0, 0.0, 0 },
+            .color = .{ 0, 1, 0 },
+            .origin = .{ 0, 0.5, 0 },
             .angle = 0,
         },
     };
 
     const indices = [_]u8{
         // zig fmt: off
-        1, 2, 0,
-        2, 1, 3, 
+        0,1,3,
+        1,2,3,
+        4,5,7,
+        5,6,7,
+        8,9,11,
+        9,10,11
         // zig fmt: own
     };
 
@@ -330,15 +390,15 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
 
-    //    for (state.vertices.?) |*vert| {
-    //        vert.angle += 33;
-    //        if (vert.color[0] > 1) vert.color[0] = vert.color[0] - @trunc(vert.color[0]);
-    //        if (vert.color[1] > 1) vert.color[1] = vert.color[0] - @trunc(vert.color[0]);
-    //        if (vert.color[2] > 1) vert.color[2] = vert.color[0] - @trunc(vert.color[0]);
-    //        vert.color[0] += 0.02;
-    //        vert.color[2] += 0.011;
-    //        vert.color[1] += 0.0113;
-    //    }
+    for (state.vertices.?) |*vert| {
+        vert.angle += 2;
+        //        if (vert.color[0] > 1) vert.color[0] = vert.color[0] - @trunc(vert.color[0]);
+        //        if (vert.color[1] > 1) vert.color[1] = vert.color[0] - @trunc(vert.color[0]);
+        //        if (vert.color[2] > 1) vert.color[2] = vert.color[0] - @trunc(vert.color[0]);
+        //        vert.color[0] += 0.02;
+        //        vert.color[2] += 0.011;
+        //        vert.color[1] += 0.0113;
+    }
 
     try check_gl_error();
     try errify(c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h));
