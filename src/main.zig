@@ -26,7 +26,6 @@ const gl_log = std.log.scoped(.gl);
 const Vertex_Shader_Path = "shaders/vertex_shader.glsl";
 const Fragment_Shader_Path = "shaders/fragment_shader.glsl";
 
-const MeshList = std.ArrayList(Mesh);
 const VertexList = std.ArrayList(Vertex);
 
 const State = struct {
@@ -39,26 +38,22 @@ const State = struct {
     gl_ctx: c.SDL_GLContext,
     gl_procs: ?gl.ProcTable,
 
-    meshes: ?[]Mesh,
     vertices: ?[]Vertex,
+    indices: ?[]u8,
 
     vao: ?c_uint, // alignment of the vertecies in vbo
     vbo_vert: ?c_uint, // vertices
-    vbo_mesh: ?c_uint, // mesh
     ibo: ?c_uint, // indexes. Maps indices to vertices, to enable reusing vertex data.
     program: ?c_uint,
     vertex_shader_source: ?[]u8,
     fragment_shader_source: ?[]u8,
 };
 
-const Mesh = struct {
-    origin: [3]f32,
-    angle: f32,
-};
-
 const Vertex = extern struct {
     position: [3]f32,
     color: [3]f32,
+    origin: [3]f32,
+    angle: f32,
 };
 
 var state: State = .{
@@ -67,63 +62,63 @@ var state: State = .{
     .screen_h = Window_Height,
     .gl_ctx = null,
     .gl_procs = null,
-    .vbo_mesh = null,
     .vbo_vert = null,
     .ibo = null,
     .vao = null,
     .program = null,
     .vertices = null,
-    .meshes = null,
+    .indices = null,
     .allocator = undefined,
     .fragment_shader_source = null,
     .vertex_shader_source = null,
 };
 
 fn vertex_specification() !void {
-    const vertices: [6]Vertex = .{
+    const vertices: [4]Vertex = .{
         .{
             .position = .{ -0.5, -0.5, 0 },
             .color = .{ 1, 0, 0 },
+            .origin = .{ 0, 0, 0 },
+            .angle = 0,
         },
         .{
             .position = .{ 0.5, -0.5, 0 },
             .color = .{ 0, 0, 1 },
+            .origin = .{ 0, 0, 0 },
+            .angle = 0,
         },
         .{
-            .position = .{ 0, 0.5, 0 },
+            .position = .{ -0.5, 0.5, 0 },
             .color = .{ 0, 1, 0 },
-        },
-
-        .{
-            .position = .{ 0.5, -0.5, 0 },
-            .color = .{ 0, 0, 1 },
+            .origin = .{ 0, 0, 0 },
+            .angle = 0,
         },
         .{
-            .position = .{ 0.7, 0.5, 0 },
+            .position = .{ 0.5, 0.5, 0 },
             .color = .{ 1, 0, 0 },
-        },
-        .{
-            .position = .{ 0, 0.5, 0 },
-            .color = .{ 0, 1, 0 },
+            .origin = .{ 0, 0, 0 },
+            .angle = 0,
         },
     };
 
-    const meshes: [2]Mesh = .{
-        Mesh{ .angle = 0, .origin = .{ 0, 0, 0 } },
-        Mesh{ .angle = 0, .origin = .{ 0, 0, 0 } },
+    const indices = [_]u8{
+        // zig fmt: off
+        1, 2, 0,
+        2, 1, 3, 
+        // zig fmt: own
     };
 
-    var meshes_list = try MeshList.initCapacity(state.allocator, 1);
+    var indices_list = try std.ArrayList(u8).initCapacity(state.allocator, 3);
     var vertices_list = try VertexList.initCapacity(state.allocator, 3);
 
     try vertices_list.appendSlice(state.allocator, vertices[0..]);
-    try meshes_list.appendSlice(state.allocator, meshes[0..]);
+    try indices_list.appendSlice(state.allocator, indices[0..]);
 
-    state.meshes = try meshes_list.toOwnedSlice(state.allocator);
     state.vertices = try vertices_list.toOwnedSlice(state.allocator);
+    state.indices = try indices_list.toOwnedSlice(state.allocator);
 
     vertices_list.deinit(state.allocator);
-    meshes_list.deinit(state.allocator);
+    indices_list.deinit(state.allocator);
 
     state.vao = undefined;
     gl.GenVertexArrays(1, (&state.vao.?)[0..1]);
@@ -132,8 +127,9 @@ fn vertex_specification() !void {
 
     state.vbo_vert = undefined;
     gl.GenBuffers(1, (&state.vbo_vert.?)[0..1]);
-    state.vbo_mesh = undefined;
-    gl.GenBuffers(1, (&state.vbo_mesh.?)[0..1]);
+
+    state.ibo = undefined;
+    gl.GenBuffers(1, (&state.ibo.?)[0..1]);
 
     try check_gl_error();
 
@@ -182,8 +178,6 @@ fn vertex_specification() !void {
         // zig fmt: on
     }
 
-    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh.?);
-    gl.BufferData(gl.ARRAY_BUFFER, @intCast(state.meshes.?.len * @sizeOf(Mesh)), @ptrCast(state.meshes.?), gl.STATIC_DRAW);
     try check_gl_error();
     {
         const origin_attrib = gl.GetAttribLocation(state.program.?, "a_Origin");
@@ -192,11 +186,11 @@ fn vertex_specification() !void {
         // zig fmt: off
             gl.VertexAttribPointer(
                 @intCast(origin_attrib),
-                @typeInfo(@FieldType(Mesh, "origin")).array.len,
+                @typeInfo(@FieldType(Vertex, "origin")).array.len,
                 gl.FLOAT,
                 gl.FALSE,
-                @sizeOf(Mesh),
-                @offsetOf(Mesh, "origin"),
+                @sizeOf(Vertex),
+                @offsetOf(Vertex, "origin"),
                 );
             // zig fmt: on
     }
@@ -211,14 +205,20 @@ fn vertex_specification() !void {
                 1,
                 gl.FLOAT,
                 gl.FALSE,
-                @sizeOf(Mesh),
-                @offsetOf(Mesh, "angle"),
+                @sizeOf(Vertex),
+                @offsetOf(Vertex, "angle"),
                 );
             // zig fmt: on
     }
 
-    gl.VertexAttribDivisor(2, 1);
-    gl.VertexAttribDivisor(3, 1);
+    gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.ibo.?);
+    gl.BufferData(
+        gl.ELEMENT_ARRAY_BUFFER,
+        @intCast(state.indices.?.len * @sizeOf(u8)),
+        @ptrCast(state.indices.?.ptr),
+        gl.STATIC_DRAW,
+    );
+    try check_gl_error();
 }
 
 fn create_graphics_pipeline() !void {
@@ -329,14 +329,22 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 
 fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
+
+    //    for (state.vertices.?) |*vert| {
+    //        vert.angle += 33;
+    //        if (vert.color[0] > 1) vert.color[0] = vert.color[0] - @trunc(vert.color[0]);
+    //        if (vert.color[1] > 1) vert.color[1] = vert.color[0] - @trunc(vert.color[0]);
+    //        if (vert.color[2] > 1) vert.color[2] = vert.color[0] - @trunc(vert.color[0]);
+    //        vert.color[0] += 0.02;
+    //        vert.color[2] += 0.011;
+    //        vert.color[1] += 0.0113;
+    //    }
+
     try check_gl_error();
     try errify(c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h));
     gl.Disable(gl.DEPTH_TEST);
     gl.Disable(gl.CULL_FACE);
     gl.Viewport(0, 0, state.screen_w, state.screen_h);
-
-    state.meshes.?[0].angle += 2.3;
-    state.meshes.?[1].angle -= 2.3;
 
     gl.ClearColor(0.1, 0.1, 0.1, 1);
     gl.Clear(gl.COLOR_BUFFER_BIT);
@@ -345,14 +353,12 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     try check_gl_error();
 
     gl.BindVertexArray(state.vao.?);
-    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_mesh.?);
-    try check_gl_error();
-
-    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.meshes.?.len * @sizeOf(Mesh)), @ptrCast(state.meshes.?));
     gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert.?);
-    try check_gl_error();
 
-    gl.DrawArraysInstanced(gl.TRIANGLES, 0, 6, 1);
+    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.vertices.?.len * @sizeOf(Vertex)), @ptrCast(state.vertices.?));
+
+    gl.DrawElements(gl.TRIANGLES, @intCast(state.indices.?.len), gl.UNSIGNED_BYTE, 0);
+    //    gl.DrawArrays(gl.TRIANGLES, 0, @intCast(state.vertices.?.len));
 
     try errify(c.SDL_GL_SwapWindow(state.window.?));
     try check_gl_error();
@@ -383,8 +389,8 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
         state.allocator.free(state.vertex_shader_source.?);
     if (state.vbo_vert != null)
         gl.DeleteBuffers(1, (&state.vbo_vert.?)[0..1]);
-    if (state.vbo_mesh != null)
-        gl.DeleteBuffers(1, (&state.vbo_mesh.?)[0..1]);
+    if (state.ibo != null)
+        gl.DeleteBuffers(1, (&state.ibo.?)[0..1]);
     if (state.vao != null)
         gl.DeleteVertexArrays(1, (&state.vao.?)[0..1]);
     if (state.ibo != null)
@@ -402,10 +408,10 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
 
     if (state.window != null)
         c.SDL_DestroyWindow(state.window.?);
-    if (state.meshes != null)
-        state.allocator.free(state.meshes.?);
     if (state.vertices != null)
         state.allocator.free(state.vertices.?);
+    if (state.indices != null)
+        state.allocator.free(state.indices.?);
 
     if (state.window != null)
         c.SDL_DestroyWindow(state.window.?);
@@ -416,13 +422,12 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
         .screen_h = Window_Height,
         .gl_ctx = null,
         .gl_procs = null,
-        .vbo_mesh = null,
         .vbo_vert = null,
         .ibo = null,
+        .indices = null,
         .vao = null,
         .program = null,
         .vertices = null,
-        .meshes = null,
         .allocator = state.allocator,
         .fragment_shader_source = null,
         .vertex_shader_source = null,
