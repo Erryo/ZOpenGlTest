@@ -23,13 +23,14 @@ const Window_Height = 480;
 const sdl_log = std.log.scoped(.sdl);
 const gl_log = std.log.scoped(.gl);
 
-const Triangles_Vertex_Shader_Path = "shaders/vertex_shader.glsl";
-const Triangles_Fragment_Shader_Path = "shaders/fragment_shader.glsl";
+const Triangles_Vertex_Shader_Path = "shaders/triangle_vertex_shader.glsl";
+const Triangles_Fragment_Shader_Path = "shaders/triangle_fragment_shader.glsl";
 
-const Lines_Vertex_Shader_Path = "shaders/vertex_shader.glsl";
-const Lines_Fragment_Shader_Path = "shaders/fragment_shader.glsl";
+const Lines_Vertex_Shader_Path = "shaders/lines_vertex_shader.glsl";
+const Lines_Fragment_Shader_Path = "shaders/lines_fragment_shader.glsl";
 
 const VertexList = std.ArrayList(Vertex);
+const ByteList = std.ArrayList(u8);
 
 const State = struct {
     window: ?*c.SDL_Window,
@@ -62,7 +63,6 @@ const Vertex = extern struct {
     position: [3]f32,
     color: [3]f32,
 };
-
 var state: State = .{
     .allocator = undefined,
     .window = null,
@@ -72,6 +72,136 @@ var state: State = .{
     .gl_procs = null,
     .objects = null,
 };
+
+fn triangles_init() !Drawable {
+    {
+        var obj: Drawable = .{
+            // zif fmt: off
+            .program = null,
+            .fragment_shader_source = null,
+            .vertex_shader_source = null,
+            .vao = null,
+            .vertices = null,
+            .vbo = null,
+            .draw_fn = triangle_draw,
+            .ibo = null,
+            .indices = null,
+            // zif fmt: on
+        };
+
+        obj.vertex_shader_source = try read_in_shader(Triangles_Vertex_Shader_Path);
+        obj.fragment_shader_source = try read_in_shader(Triangles_Fragment_Shader_Path);
+
+        obj.program = try create_graphics_pipeline(obj.vertex_shader_source.?, obj.fragment_shader_source.?);
+
+        const vertices = [_]Vertex{
+            Vertex{ .color = .{ 0, 1, 0 }, .position = .{ -0.5, -0.5, 0 } },
+            Vertex{ .color = .{ 1, 0, 0 }, .position = .{ 0.5, -0.5, 0 } },
+            Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0, 0.5, 0 } },
+            Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0.5, 0.5, 0 } },
+        };
+
+        const indices = [_]u8{
+            0, 1, 2,
+            2, 1, 3,
+        };
+
+        var vertices_list = try VertexList.initCapacity(state.allocator, vertices.len);
+        var indices_list = try ByteList.initCapacity(state.allocator, indices.len);
+
+        try vertices_list.appendSlice(state.allocator, vertices[0..]);
+        try indices_list.appendSlice(state.allocator, indices[0..]);
+
+        obj.vertices = try vertices_list.toOwnedSlice(state.allocator);
+        obj.indices = try indices_list.toOwnedSlice(state.allocator);
+
+        vertices_list.deinit(state.allocator);
+        indices_list.deinit(state.allocator);
+
+        obj.vao = undefined;
+
+        gl.GenVertexArrays(1, (&obj.vao.?)[0..1]);
+        gl.BindVertexArray(obj.vao.?);
+        defer gl.BindVertexArray(0);
+
+        obj.vbo = undefined;
+        gl.GenBuffers(1, (&obj.vbo.?)[0..1]);
+
+        obj.ibo = undefined;
+        gl.GenBuffers(1, (&obj.ibo.?)[0..1]);
+
+        gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
+        defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
+
+        gl.BufferData(
+            gl.ARRAY_BUFFER,
+            @intCast(obj.vertices.?.len * @sizeOf(Vertex)),
+            @ptrCast(obj.vertices.?.ptr),
+            gl.STATIC_DRAW,
+        );
+        try check_gl_error();
+
+        {
+            const position_attrib = gl.GetAttribLocation(obj.program.?, "a_Position");
+            if (position_attrib == -1) return error.GlPositionAttribInvalid;
+            gl.EnableVertexAttribArray(@intCast(position_attrib));
+
+            // zig fmt: off
+    gl.VertexAttribPointer(
+        @intCast(position_attrib),
+        @typeInfo(@FieldType(Vertex, "position")).array.len,
+        gl.FLOAT,
+        gl.FALSE,
+        @sizeOf(Vertex),
+        @offsetOf(Vertex, "position"),
+        );
+    // zig fmt: on
+        }
+
+        {
+            const color_attrib = gl.GetAttribLocation(obj.program.?, "a_Color");
+            if (color_attrib == -1) return error.GlPositionAttribInvalid;
+            gl.EnableVertexAttribArray(@intCast(color_attrib));
+
+            // zig fmt: off
+        gl.VertexAttribPointer(
+            @intCast(color_attrib),
+            @typeInfo(@FieldType(Vertex, "color")).array.len,
+            gl.FLOAT,
+            gl.FALSE,
+            @sizeOf(Vertex),
+            @offsetOf(Vertex, "color"),
+            );
+        // zig fmt: on
+        }
+
+        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, obj.ibo.?);
+        gl.BufferData(
+            gl.ELEMENT_ARRAY_BUFFER,
+            @intCast(obj.indices.?.len * @sizeOf(u8)),
+            @ptrCast(obj.indices.?.ptr),
+            gl.STATIC_DRAW,
+        );
+        try check_gl_error();
+        return obj;
+    }
+}
+fn triangle_draw(obj: *Drawable) anyerror!void {
+    gl.UseProgram(obj.program.?);
+    try check_gl_error();
+    defer gl.UseProgram(0);
+
+    gl.BindVertexArray(obj.vao.?);
+    defer gl.BindVertexArray(0);
+
+    gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
+    defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
+
+    //    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.vertices.?.len * @sizeOf(Vertex)), @ptrCast(state.vertices.?));
+    //    gl.DrawArrays(gl.TRIANGLES, 0, @intCast(obj.vertices.?.len));
+
+    gl.DrawElements(gl.TRIANGLES, @intCast(obj.indices.?.len), gl.UNSIGNED_BYTE, 0);
+}
 
 fn line_draw(obj: *Drawable) anyerror!void {
     gl.UseProgram(obj.program.?);
@@ -294,9 +424,10 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     //    try create_graphics_pipeline();
     //    try vertex_specification();
 
-    state.objects = try state.allocator.alloc(Drawable, 1);
+    state.objects = try state.allocator.alloc(Drawable, 2);
 
     state.objects.?[0] = try lines_init();
+    state.objects.?[1] = try triangles_init();
 
     return c.SDL_APP_CONTINUE;
 }
