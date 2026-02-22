@@ -220,6 +220,36 @@ fn line_draw(obj: *Drawable) anyerror!void {
     //    gl.DrawElements(gl.TRIANGLES, @intCast(state.indices.?.len), gl.UNSIGNED_BYTE, 0);
 }
 
+fn draw_grid(vertices: *VertexList, offset: f32) !void {
+    var x: f32 = -1.0;
+    while (x <= 1) : (x += offset) {
+        const start = Vertex{
+            .color = .{ 1, 0, 0 },
+            .position = .{ x, -1, 0 },
+        };
+        const end = Vertex{
+            .color = .{ 0, 0, 1 },
+            .position = .{ x, 1, 0 },
+        };
+        try vertices.append(state.allocator, start);
+        try vertices.append(state.allocator, end);
+    }
+
+    var y: f32 = -1.0;
+    while (y <= 1) : (y += offset) {
+        const start = Vertex{
+            .color = .{ 1, 0, 0 },
+            .position = .{ -1, y, 0 },
+        };
+        const end = Vertex{
+            .color = .{ 0, 0, 1 },
+            .position = .{ x, y, 0 },
+        };
+        try vertices.append(state.allocator, start);
+        try vertices.append(state.allocator, end);
+    }
+}
+
 fn lines_init() !Drawable {
     var obj: Drawable = .{
         // zif fmt: off
@@ -240,17 +270,16 @@ fn lines_init() !Drawable {
 
     obj.program = try create_graphics_pipeline(obj.vertex_shader_source.?, obj.fragment_shader_source.?);
 
-    const vertices = [_]Vertex{
-        Vertex{ .color = .{ 1, 0, 0 }, .position = .{ -1, 0, 0 } },
-        Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 1, 0, 0 } },
-        Vertex{ .color = .{ 1, 0, 0 }, .position = .{ 0, -1, 0 } },
-        Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0, 1, 0 } },
-    };
+    //const vertices = [_]Vertex{
+    //    Vertex{ .color = .{ 1, 0, 0 }, .position = .{ -1, 0, 0 } },
+    //    Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 1, 0, 0 } },
+    //    Vertex{ .color = .{ 1, 0, 0 }, .position = .{ 0, -1, 0 } },
+    //    Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0, 1, 0 } },
+    //};
 
-    var vertices_list = try VertexList.initCapacity(state.allocator, vertices.len);
+    var vertices_list = try VertexList.initCapacity(state.allocator, 4);
 
-    try vertices_list.appendSlice(state.allocator, vertices[0..]);
-
+    try draw_grid(&vertices_list, 0.1);
     obj.vertices = try vertices_list.toOwnedSlice(state.allocator);
 
     vertices_list.deinit(state.allocator);
