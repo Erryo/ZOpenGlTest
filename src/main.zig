@@ -8,6 +8,7 @@ const c = @cImport({
     @cDefine("SDL_MAIN_HANDLED", {}); // We are providing our own entry point
     @cInclude("SDL3/SDL_main.h");
 });
+const zm = @import("zm");
 
 const target_triple: [:0]const u8 = x: {
     var buf: [256]u8 = undefined;
@@ -17,7 +18,7 @@ const target_triple: [:0]const u8 = x: {
 const Saturation = 0.6;
 const Luminance = 0.5;
 
-const Window_Width = 720;
+const Window_Width = 480;
 const Window_Height = 480;
 
 const sdl_log = std.log.scoped(.sdl);
@@ -28,6 +29,9 @@ const Triangles_Fragment_Shader_Path = "shaders/triangle_fragment_shader.glsl";
 
 const Lines_Vertex_Shader_Path = "shaders/lines_vertex_shader.glsl";
 const Lines_Fragment_Shader_Path = "shaders/lines_fragment_shader.glsl";
+
+const Triangles_Index = 0;
+const Lines_Index = 1;
 
 const VertexList = std.ArrayList(Vertex);
 const ByteList = std.ArrayList(u8);
@@ -42,15 +46,20 @@ const State = struct {
     gl_ctx: c.SDL_GLContext,
     gl_procs: ?gl.ProcTable,
 
+    offset: zm.Vec3f = .zero(),
     objects: ?[]Drawable,
 };
 
 const Drawable = struct {
     draw_fn: *const fn (*Drawable) anyerror!void,
 
+    model_matrix: zm.Mat4f,
+    offset: zm.Vec3f,
+
     vertices: ?[]Vertex,
     indices: ?[]u8,
 
+    model_uniform: ?c_uint,
     vbo: ?c_uint,
     program: ?c_uint,
     vertex_shader_source: ?[]u8,
@@ -77,6 +86,9 @@ fn triangles_init() !Drawable {
     {
         var obj: Drawable = .{
             // zif fmt: off
+            .model_uniform = null,
+            .offset = zm.Vec3f.zero(),
+            .model_matrix = zm.Mat4f.identity(),
             .program = null,
             .fragment_shader_source = null,
             .vertex_shader_source = null,
@@ -99,11 +111,13 @@ fn triangles_init() !Drawable {
             Vertex{ .color = .{ 1, 0, 0 }, .position = .{ 0.5, -0.5, 0 } },
             Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0, 0.5, 0 } },
             Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0.5, 0.5, 0 } },
+            Vertex{ .color = .{ 1, 0, 0 }, .position = .{ -0.5, 0.5, 0 } },
         };
 
         const indices = [_]u8{
             0, 1, 2,
             2, 1, 3,
+            4, 0, 2,
         };
 
         var vertices_list = try VertexList.initCapacity(state.allocator, vertices.len);
@@ -186,6 +200,15 @@ fn triangles_init() !Drawable {
         return obj;
     }
 }
+
+fn print_4x4(mat: zm.Mat4f) void {
+    std.debug.print("4x4 matrix:\n", .{});
+    for (mat.data) |row| {
+        std.debug.print("{d} {d} {d} {d}\n", .{ row[0], row[1], row[2], row[3] });
+    }
+    std.debug.print("\n", .{});
+}
+
 fn triangle_draw(obj: *Drawable) anyerror!void {
     gl.UseProgram(obj.program.?);
     try check_gl_error();
@@ -197,9 +220,18 @@ fn triangle_draw(obj: *Drawable) anyerror!void {
     gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
     defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
 
-    //    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.vertices.?.len * @sizeOf(Vertex)), @ptrCast(state.vertices.?));
-    //    gl.DrawArrays(gl.TRIANGLES, 0, @intCast(obj.vertices.?.len));
+    obj.offset.addAssign(state.offset);
+    obj.model_matrix = .translationVec3(obj.offset);
+    print_4x4(obj.model_matrix);
 
+    const u_model_address = gl.GetUniformLocation(obj.program.?, "u_ModelMatrix");
+    if (u_model_address >= 0) {
+        const flat: [*]const [16]f32 =
+            @ptrCast(&obj.model_matrix.data);
+        gl.UniformMatrix4fv(u_model_address, 1, gl.TRUE, flat);
+    } else gl_log.err("unable to find u_ModelMatrix\n", .{});
+
+    //    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.vertices.?.len * @sizeOf(Vertex)), @ptrCast(state.vertices.?));
     gl.DrawElements(gl.TRIANGLES, @intCast(obj.indices.?.len), gl.UNSIGNED_BYTE, 0);
 }
 
@@ -213,22 +245,30 @@ fn line_draw(obj: *Drawable) anyerror!void {
 
     gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
     defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
+    //obj.offset.addAssign(state.offset);
+    obj.model_matrix = .translationVec3(obj.offset);
+
+    const u_model_address = gl.GetUniformLocation(obj.program.?, "u_ModelMatrix");
+    if (u_model_address >= 0) {
+        const flat: [*]const [16]f32 =
+            @ptrCast(&obj.model_matrix.data);
+        gl.UniformMatrix4fv(u_model_address, 1, gl.TRUE, flat);
+    } else gl_log.err("unable to find u_ModelMatrix\n", .{});
 
     //    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.vertices.?.len * @sizeOf(Vertex)), @ptrCast(state.vertices.?));
     gl.DrawArrays(gl.LINES, 0, @intCast(obj.vertices.?.len));
-
-    //    gl.DrawElements(gl.TRIANGLES, @intCast(state.indices.?.len), gl.UNSIGNED_BYTE, 0);
 }
 
 fn draw_grid(vertices: *VertexList, offset: f32) !void {
     var x: f32 = -1.0;
     while (x <= 1) : (x += offset) {
+        x = @round(x * 1000) / 1000;
         const start = Vertex{
-            .color = .{ 1, 0, 0 },
+            .color = if (x != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
             .position = .{ x, -1, 0 },
         };
         const end = Vertex{
-            .color = .{ 0, 0, 1 },
+            .color = if (x != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
             .position = .{ x, 1, 0 },
         };
         try vertices.append(state.allocator, start);
@@ -237,12 +277,13 @@ fn draw_grid(vertices: *VertexList, offset: f32) !void {
 
     var y: f32 = -1.0;
     while (y <= 1) : (y += offset) {
+        y = @round(y * 1000) / 1000;
         const start = Vertex{
-            .color = .{ 1, 0, 0 },
+            .color = if (y != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
             .position = .{ -1, y, 0 },
         };
         const end = Vertex{
-            .color = .{ 0, 0, 1 },
+            .color = if (y != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
             .position = .{ x, y, 0 },
         };
         try vertices.append(state.allocator, start);
@@ -254,6 +295,9 @@ fn lines_init() !Drawable {
     var obj: Drawable = .{
         // zif fmt: off
         .program = null,
+        .model_matrix = zm.Mat4f.identity(),
+        .offset = zm.Vec3f.zero(),
+        .model_uniform = null,
         .fragment_shader_source = null,
         .vertex_shader_source = null,
         .vao = null,
@@ -269,13 +313,6 @@ fn lines_init() !Drawable {
     obj.fragment_shader_source = try read_in_shader(Lines_Fragment_Shader_Path);
 
     obj.program = try create_graphics_pipeline(obj.vertex_shader_source.?, obj.fragment_shader_source.?);
-
-    //const vertices = [_]Vertex{
-    //    Vertex{ .color = .{ 1, 0, 0 }, .position = .{ -1, 0, 0 } },
-    //    Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 1, 0, 0 } },
-    //    Vertex{ .color = .{ 1, 0, 0 }, .position = .{ 0, -1, 0 } },
-    //    Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0, 1, 0 } },
-    //};
 
     var vertices_list = try VertexList.initCapacity(state.allocator, 4);
 
@@ -455,8 +492,8 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 
     state.objects = try state.allocator.alloc(Drawable, 2);
 
-    state.objects.?[0] = try lines_init();
-    state.objects.?[1] = try triangles_init();
+    state.objects.?[Lines_Index] = try lines_init();
+    state.objects.?[Triangles_Index] = try triangles_init();
 
     return c.SDL_APP_CONTINUE;
 }
@@ -492,6 +529,7 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
 
     try errify(c.SDL_GL_SwapWindow(state.window.?));
     try check_gl_error();
+    state.offset = .zero();
     return c.SDL_APP_CONTINUE;
 }
 
@@ -500,6 +538,18 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
 
     if (event.type == c.SDL_EVENT_QUIT) {
         return c.SDL_APP_SUCCESS;
+    }
+
+    if (event.type == c.SDL_EVENT_KEY_DOWN) {
+        var offset: zm.Vec3f = .zero();
+        switch (event.key.scancode) {
+            c.SDL_SCANCODE_A => offset.addAssign(.{ .data = .{ -0.1, 0, 0 } }),
+            c.SDL_SCANCODE_D => offset.addAssign(.{ .data = .{ 0.1, 0, 0 } }),
+            c.SDL_SCANCODE_S => offset.addAssign(.{ .data = .{ 0, -0.1, 0 } }),
+            c.SDL_SCANCODE_W => offset.addAssign(.{ .data = .{ 0, 0.1, 0 } }),
+            else => {},
+        }
+        state.offset = offset;
     }
 
     return c.SDL_APP_CONTINUE;
@@ -534,6 +584,9 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
             state.allocator.free(obj.indices.?);
 
         obj.* = Drawable{
+            .model_matrix = .identity(),
+            .model_uniform = null,
+            .offset = .zero(),
             .fragment_shader_source = null,
             .ibo = null,
             .vertex_shader_source = null,

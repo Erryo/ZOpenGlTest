@@ -15,6 +15,10 @@
             .url = "git+https://github.com/castholm/zigglgen.git#b624cc7d2e984f61c63a83a3d0ad6c686782f961",
             .hash = "zigglgen-0.4.0-bmyqLV6PLwAt0VCiGVgz6kZ448zaiTix2Z8MXEEuN4Vi",
         },
+        .zm = .{
+            .url = "git+https://github.com/griush/zm#019dfc79378eb3c1314f0e7a999f9102dd59bd51",
+            .hash = "zm-0.5.0-cLX-WXTdAACNTDbatSmwFKqWLzOJ62VFD_KMmFaH8HQT",
+        },
     },
     .paths = .{
         "invalid", // Not intended for consumption as a package

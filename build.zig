@@ -19,6 +19,11 @@ pub fn build(b: *std.Build) void {
         // Work around a problematic definition in wchar.h in Windows SDK version 10.0.26100.0
         app_mod.addCMacro("_Avx2WmemEnabledWeakValue", "_Avx2WmemEnabled");
     }
+    const zm = b.dependency("zm", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    app_mod.addImport("zm", zm.module("zm"));
 
     const sdl_dep = b.dependency("sdl", .{
         .target = target,
