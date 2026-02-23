@@ -643,12 +643,13 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
 
     try check_gl_error();
-    gl.Disable(gl.DEPTH_TEST);
+    gl.Enable(gl.DEPTH_TEST);
+    gl.DepthFunc(gl.LESS);
     gl.Disable(gl.CULL_FACE);
     gl.Viewport(0, 0, state.screen_w, state.screen_h);
 
     gl.ClearColor(0.1, 0.1, 0.1, 1);
-    gl.Clear(gl.COLOR_BUFFER_BIT);
+    gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     if (state.objects) |_| {
         for (state.objects.?) |*obj| {
