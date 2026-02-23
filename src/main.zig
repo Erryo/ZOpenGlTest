@@ -9,6 +9,7 @@ const c = @cImport({
     @cInclude("SDL3/SDL_main.h");
 });
 const zm = @import("zm");
+const rand = std.crypto.random;
 
 const target_triple: [:0]const u8 = x: {
     var buf: [256]u8 = undefined;
@@ -30,8 +31,8 @@ const Triangles_Fragment_Shader_Path = "shaders/triangle_fragment_shader.glsl";
 const Lines_Vertex_Shader_Path = "shaders/lines_vertex_shader.glsl";
 const Lines_Fragment_Shader_Path = "shaders/lines_fragment_shader.glsl";
 
-const Triangles_Index = 0;
-const Lines_Index = 1;
+const Triangles_Index = 1;
+const Lines_Index = 0;
 
 const VertexList = std.ArrayList(Vertex);
 const ByteList = std.ArrayList(u8);
@@ -47,7 +48,7 @@ const State = struct {
     gl_procs: ?gl.ProcTable,
 
     offset: zm.Vec3f = .zero(),
-    projection_matrix: zm.Mat4f = .perspectiveLH(45.0, 4.0 / 3.0, 0.1, 10.0),
+    projection_matrix: zm.Mat4f = .perspectiveLH(450.0, 4.0 / 3.0, 0.1, 10.0),
     objects: ?[]Drawable,
 };
 
@@ -84,6 +85,39 @@ var state: State = .{
     .objects = null,
 };
 
+fn gen_cube(vertices: *VertexList, indices: *ByteList, side: f32) !void {
+    const half_side = side / 2.0;
+    const positions = [_][3]f32{
+        .{ -half_side, -half_side, -half_side },
+        .{ half_side, -half_side, -half_side },
+        .{ half_side, half_side, -half_side },
+        .{ -half_side, half_side, -half_side },
+        .{ -half_side, -half_side, half_side },
+        .{ half_side, -half_side, half_side },
+        .{ half_side, half_side, half_side },
+        .{ -half_side, half_side, half_side },
+    };
+
+    for (positions) |pos| {
+        const vertex = Vertex{
+            .position = pos,
+            .color = .{ 0, rand.float(f32), 0 },
+        };
+        try vertices.append(state.allocator, vertex);
+    }
+
+    const cube_indices: [36]u8 = .{
+        0, 1, 2, 2, 3, 0,
+        4, 5, 6, 6, 7, 4,
+        0, 1, 5, 5, 4, 0,
+        2, 3, 7, 7, 6, 2,
+        1, 2, 6, 6, 5, 1,
+        3, 0, 4, 4, 7, 3,
+    };
+
+    try indices.appendSlice(state.allocator, cube_indices[0..]);
+}
+
 fn triangles_init() !Drawable {
     {
         var obj: Drawable = .{
@@ -109,25 +143,27 @@ fn triangles_init() !Drawable {
 
         obj.program = try create_graphics_pipeline(obj.vertex_shader_source.?, obj.fragment_shader_source.?);
 
-        const vertices = [_]Vertex{
-            Vertex{ .color = .{ 0, 1, 0 }, .position = .{ -0.5, -0.5, 0 } },
-            Vertex{ .color = .{ 1, 0, 0 }, .position = .{ 0.5, -0.5, 0 } },
-            Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0, 0.5, 0 } },
-            Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0.5, 0.5, 0 } },
-            Vertex{ .color = .{ 1, 0, 0 }, .position = .{ -0.5, 0.5, 0 } },
-        };
+        //    const vertices = [_]Vertex{
+        //        Vertex{ .color = .{ 0, 1, 0 }, .position = .{ -0.5, -0.5, 0 } },
+        //        Vertex{ .color = .{ 1, 0, 0 }, .position = .{ 0.5, -0.5, 0 } },
+        //        Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0, 0.5, 0 } },
+        //        Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0.5, 0.5, 0 } },
+        //        Vertex{ .color = .{ 1, 0, 0 }, .position = .{ -0.5, 0.5, 0 } },
+        //    };
 
-        const indices = [_]u8{
-            0, 1, 2,
-            2, 1, 3,
-            4, 0, 2,
-        };
+        //        const indices = [_]u8{
+        //            0, 1, 2,
+        //            2, 1, 3,
+        //            4, 0, 2,
+        //        };
 
-        var vertices_list = try VertexList.initCapacity(state.allocator, vertices.len);
-        var indices_list = try ByteList.initCapacity(state.allocator, indices.len);
+        var vertices_list = try VertexList.initCapacity(state.allocator, 12);
+        var indices_list = try ByteList.initCapacity(state.allocator, 6);
 
-        try vertices_list.appendSlice(state.allocator, vertices[0..]);
-        try indices_list.appendSlice(state.allocator, indices[0..]);
+        try gen_cube(&vertices_list, &indices_list, 0.1);
+
+        //try vertices_list.appendSlice(state.allocator, vertices[0..]);
+        //try indices_list.appendSlice(state.allocator, indices[0..]);
 
         obj.vertices = try vertices_list.toOwnedSlice(state.allocator);
         obj.indices = try indices_list.toOwnedSlice(state.allocator);
@@ -234,7 +270,7 @@ fn triangle_draw(obj: *Drawable) anyerror!void {
 
     obj.offset.addAssign(state.offset);
     obj.model_matrix = .translationVec3(obj.offset);
-    print_4x4(obj.model_matrix);
+    //print_4x4(obj.model_matrix);
 
     const flat: [*]const [16]f32 =
         @ptrCast(&obj.model_matrix.data);
@@ -258,21 +294,54 @@ fn line_draw(obj: *Drawable) anyerror!void {
 
     gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
     defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
-    //obj.offset.addAssign(state.offset);
+    obj.offset.addAssign(state.offset);
+    //
     obj.model_matrix = .translationVec3(obj.offset);
 
-    const u_model_address = gl.GetUniformLocation(obj.program.?, "u_ModelMatrix");
-    if (u_model_address >= 0) {
-        const flat: [*]const [16]f32 =
-            @ptrCast(&obj.model_matrix.data);
-        gl.UniformMatrix4fv(u_model_address, 1, gl.TRUE, flat);
-    } else gl_log.err("unable to find u_ModelMatrix\n", .{});
+    const flat: [*]const [16]f32 =
+        @ptrCast(&obj.model_matrix.data);
+    gl.UniformMatrix4fv(obj.model_uniform.?, 1, gl.TRUE, flat);
+
+    const flat_projection: [*]const [16]f32 =
+        @ptrCast(&state.projection_matrix);
+    gl.UniformMatrix4fv(obj.projection_uniform.?, 1, gl.TRUE, flat_projection);
 
     //    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.vertices.?.len * @sizeOf(Vertex)), @ptrCast(state.vertices.?));
     gl.DrawArrays(gl.LINES, 0, @intCast(obj.vertices.?.len));
 }
 
-fn draw_grid(vertices: *VertexList, offset: f32) !void {
+fn gen_grid_xz(vertices: *VertexList, offset: f32) !void {
+    var x: f32 = -1.0;
+    while (x <= 1) : (x += offset) {
+        x = @round(x * 1000) / 1000;
+        const start = Vertex{
+            .color = if (x != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
+            .position = .{ x, 0, -1 },
+        };
+        const end = Vertex{
+            .color = if (x != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
+            .position = .{ x, 0, 1 },
+        };
+        try vertices.append(state.allocator, start);
+        try vertices.append(state.allocator, end);
+    }
+
+    var z: f32 = -1.0;
+    while (z <= 1) : (z += offset) {
+        z = @round(z * 1000) / 1000;
+        const start = Vertex{
+            .color = if (z != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
+            .position = .{ -1, 0, z },
+        };
+        const end = Vertex{
+            .color = if (z != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
+            .position = .{ 1, 0, z },
+        };
+        try vertices.append(state.allocator, start);
+        try vertices.append(state.allocator, end);
+    }
+}
+fn gen_grid_xy(vertices: *VertexList, offset: f32) !void {
     var x: f32 = -1.0;
     while (x <= 1) : (x += offset) {
         x = @round(x * 1000) / 1000;
@@ -330,7 +399,7 @@ fn lines_init() !Drawable {
 
     var vertices_list = try VertexList.initCapacity(state.allocator, 4);
 
-    try draw_grid(&vertices_list, 0.1);
+    try gen_grid_xz(&vertices_list, 0.1);
     obj.vertices = try vertices_list.toOwnedSlice(state.allocator);
 
     vertices_list.deinit(state.allocator);
@@ -346,6 +415,16 @@ fn lines_init() !Drawable {
 
     gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
     defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
+
+    const u_model_address = gl.GetUniformLocation(obj.program.?, "u_ModelMatrix");
+    if (u_model_address >= 0) {
+        obj.model_uniform = u_model_address;
+    } else gl_log.err("unable to find u_ModelMatrix\n", .{});
+
+    const u_proj_addr = gl.GetUniformLocation(obj.program.?, "u_ProjectionMatrix");
+    if (u_proj_addr >= 0) {
+        obj.projection_uniform = u_proj_addr;
+    } else gl_log.err("unable to find u_ProjectionMatrix\n", .{});
 
     gl.BufferData(
         gl.ARRAY_BUFFER,
@@ -516,7 +595,6 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
 
     try check_gl_error();
-    try errify(c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h));
     gl.Disable(gl.DEPTH_TEST);
     gl.Disable(gl.CULL_FACE);
     gl.Viewport(0, 0, state.screen_w, state.screen_h);
@@ -552,6 +630,13 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
 
     if (event.type == c.SDL_EVENT_QUIT) {
         return c.SDL_APP_SUCCESS;
+    }
+
+    if (event.type == c.SDL_EVENT_WINDOW_RESIZED) {
+        sdl_log.debug(":window resized\n", .{});
+        _ = c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h);
+        const aspect: f32 = @as(f32, @floatFromInt(state.screen_w)) / @as(f32, @floatFromInt(state.screen_h));
+        state.projection_matrix = .perspectiveRH(45.0, aspect, 0.1, 10.0);
     }
 
     if (event.type == c.SDL_EVENT_KEY_DOWN) {
