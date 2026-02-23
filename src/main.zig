@@ -86,36 +86,84 @@ var state: State = .{
 };
 
 fn gen_cube(vertices: *VertexList, indices: *ByteList, side: f32) !void {
-    const half_side = side / 2.0;
-    const positions = [_][3]f32{
-        .{ -half_side, -half_side, -half_side },
-        .{ half_side, -half_side, -half_side },
-        .{ half_side, half_side, -half_side },
-        .{ -half_side, half_side, -half_side },
-        .{ -half_side, -half_side, half_side },
-        .{ half_side, -half_side, half_side },
-        .{ half_side, half_side, half_side },
-        .{ -half_side, half_side, half_side },
+    const half = side / 2.0;
+
+    const face_colors = [_][3]f32{
+        .{ 1, 0, 0 }, // Front - Red
+        .{ 0, 1, 0 }, // Back - Green
+        .{ 0, 0, 1 }, // Left - Blue
+        .{ 1, 1, 0 }, // Right - Yellow
+        .{ 1, 0, 1 }, // Top - Magenta
+        .{ 0, 1, 1 }, // Bottom - Cyan
     };
 
-    for (positions) |pos| {
-        const vertex = Vertex{
-            .position = pos,
-            .color = .{ 0, rand.float(f32), 0 },
-        };
-        try vertices.append(state.allocator, vertex);
+    const faces = [_][4][3]f32{
+        // Front
+        .{
+            .{ -half, -half, half },
+            .{ half, -half, half },
+            .{ half, half, half },
+            .{ -half, half, half },
+        },
+        // Back
+        .{
+            .{ half, -half, -half },
+            .{ -half, -half, -half },
+            .{ -half, half, -half },
+            .{ half, half, -half },
+        },
+        // Left
+        .{
+            .{ -half, -half, -half },
+            .{ -half, -half, half },
+            .{ -half, half, half },
+            .{ -half, half, -half },
+        },
+        // Right
+        .{
+            .{ half, -half, half },
+            .{ half, -half, -half },
+            .{ half, half, -half },
+            .{ half, half, half },
+        },
+        // Top
+        .{
+            .{ -half, half, half },
+            .{ half, half, half },
+            .{ half, half, -half },
+            .{ -half, half, -half },
+        },
+        // Bottom
+        .{
+            .{ -half, -half, -half },
+            .{ half, -half, -half },
+            .{ half, -half, half },
+            .{ -half, -half, half },
+        },
+    };
+
+    var vertex_index: u8 = @intCast(vertices.items.len);
+
+    for (faces, 0..) |face, i| {
+        const color = face_colors[i];
+
+        // Add 4 vertices per face
+        for (face) |pos| {
+            try vertices.append(state.allocator, Vertex{
+                .position = pos,
+                .color = color,
+            });
+        }
+
+        // Add 2 triangles (6 indices) per face
+        const base = vertex_index;
+        try indices.appendSlice(state.allocator, &[_]u8{
+            base,     base + 1, base + 2,
+            base + 2, base + 3, base,
+        });
+
+        vertex_index += 4;
     }
-
-    const cube_indices: [36]u8 = .{
-        0, 1, 2, 2, 3, 0,
-        4, 5, 6, 6, 7, 4,
-        0, 1, 5, 5, 4, 0,
-        2, 3, 7, 7, 6, 2,
-        1, 2, 6, 6, 5, 1,
-        3, 0, 4, 4, 7, 3,
-    };
-
-    try indices.appendSlice(state.allocator, cube_indices[0..]);
 }
 
 fn triangles_init() !Drawable {
