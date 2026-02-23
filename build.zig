@@ -51,6 +51,9 @@ pub fn build(b: *std.Build) void {
         .root_module = app_mod,
     });
 
+    app_exe.linkLibC();
+    app_exe.linkSystemLibrary("c");
+
     b.installArtifact(app_exe);
 
     const run_app = b.addRunArtifact(app_exe);
