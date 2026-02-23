@@ -47,6 +47,7 @@ const State = struct {
     gl_procs: ?gl.ProcTable,
 
     offset: zm.Vec3f = .zero(),
+    projection_matrix: zm.Mat4f = .perspectiveLH(45.0, 4.0 / 3.0, 0.1, 10.0),
     objects: ?[]Drawable,
 };
 
@@ -59,7 +60,8 @@ const Drawable = struct {
     vertices: ?[]Vertex,
     indices: ?[]u8,
 
-    model_uniform: ?c_uint,
+    projection_uniform: ?c_int,
+    model_uniform: ?c_int,
     vbo: ?c_uint,
     program: ?c_uint,
     vertex_shader_source: ?[]u8,
@@ -87,6 +89,7 @@ fn triangles_init() !Drawable {
         var obj: Drawable = .{
             // zif fmt: off
             .model_uniform = null,
+            .projection_uniform = null,
             .offset = zm.Vec3f.zero(),
             .model_matrix = zm.Mat4f.identity(),
             .program = null,
@@ -147,6 +150,15 @@ fn triangles_init() !Drawable {
         gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
         defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
 
+        const u_model_address = gl.GetUniformLocation(obj.program.?, "u_ModelMatrix");
+        if (u_model_address >= 0) {
+            obj.model_uniform = @intCast(u_model_address);
+        } else gl_log.err("unable to find u_ModelMatrix\n", .{});
+
+        const u_proj_address = gl.GetUniformLocation(obj.program.?, "u_ProjectionMatrix");
+        if (u_proj_address >= 0) {
+            obj.projection_uniform = @intCast(u_proj_address);
+        } else gl_log.err("unable to find u_ProjectionMatrix\n", .{});
         gl.BufferData(
             gl.ARRAY_BUFFER,
             @intCast(obj.vertices.?.len * @sizeOf(Vertex)),
@@ -224,12 +236,13 @@ fn triangle_draw(obj: *Drawable) anyerror!void {
     obj.model_matrix = .translationVec3(obj.offset);
     print_4x4(obj.model_matrix);
 
-    const u_model_address = gl.GetUniformLocation(obj.program.?, "u_ModelMatrix");
-    if (u_model_address >= 0) {
-        const flat: [*]const [16]f32 =
-            @ptrCast(&obj.model_matrix.data);
-        gl.UniformMatrix4fv(u_model_address, 1, gl.TRUE, flat);
-    } else gl_log.err("unable to find u_ModelMatrix\n", .{});
+    const flat: [*]const [16]f32 =
+        @ptrCast(&obj.model_matrix.data);
+    gl.UniformMatrix4fv(obj.model_uniform.?, 1, gl.TRUE, flat);
+
+    const flat_projection: [*]const [16]f32 =
+        @ptrCast(&state.projection_matrix);
+    gl.UniformMatrix4fv(obj.projection_uniform.?, 1, gl.TRUE, flat_projection);
 
     //    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.vertices.?.len * @sizeOf(Vertex)), @ptrCast(state.vertices.?));
     gl.DrawElements(gl.TRIANGLES, @intCast(obj.indices.?.len), gl.UNSIGNED_BYTE, 0);
@@ -298,6 +311,7 @@ fn lines_init() !Drawable {
         .model_matrix = zm.Mat4f.identity(),
         .offset = zm.Vec3f.zero(),
         .model_uniform = null,
+        .projection_uniform = null,
         .fragment_shader_source = null,
         .vertex_shader_source = null,
         .vao = null,
@@ -547,6 +561,9 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
             c.SDL_SCANCODE_D => offset.addAssign(.{ .data = .{ 0.1, 0, 0 } }),
             c.SDL_SCANCODE_S => offset.addAssign(.{ .data = .{ 0, -0.1, 0 } }),
             c.SDL_SCANCODE_W => offset.addAssign(.{ .data = .{ 0, 0.1, 0 } }),
+            c.SDL_SCANCODE_UP => offset.addAssign(.{ .data = .{ 0, 0, -0.1 } }),
+            c.SDL_SCANCODE_DOWN => offset.addAssign(.{ .data = .{ 0, 0, 0.1 } }),
+
             else => {},
         }
         state.offset = offset;
@@ -586,6 +603,7 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
         obj.* = Drawable{
             .model_matrix = .identity(),
             .model_uniform = null,
+            .projection_uniform = null,
             .offset = .zero(),
             .fragment_shader_source = null,
             .ibo = null,
