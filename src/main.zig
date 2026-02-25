@@ -16,6 +16,8 @@ const target_triple: [:0]const u8 = x: {
     var fba: std.heap.FixedBufferAllocator = .init(&buf);
     break :x (builtin.target.zigTriple(fba.allocator()) catch unreachable) ++ "";
 };
+
+const Allocator = std.mem.Allocator;
 const Saturation = 0.6;
 const Luminance = 0.5;
 
@@ -25,17 +27,23 @@ const Window_Height = 480;
 const sdl_log = std.log.scoped(.sdl);
 const gl_log = std.log.scoped(.gl);
 
-const Triangles_Vertex_Shader_Path = "shaders/triangle_vertex_shader.glsl";
-const Triangles_Fragment_Shader_Path = "shaders/triangle_fragment_shader.glsl";
-
-const Lines_Vertex_Shader_Path = "shaders/lines_vertex_shader.glsl";
-const Lines_Fragment_Shader_Path = "shaders/lines_fragment_shader.glsl";
-
-const Triangles_Index = 1;
-const Lines_Index = 0;
+const Vertex_Shader_Path = "shaders/vertex_shader.glsl";
+const Fragment_Shader_Path = "shaders/fragment_shader.glsl";
 
 const VertexList = std.ArrayList(Vertex);
+const ObjectList = std.ArrayList(Object);
 const ByteList = std.ArrayList(u8);
+
+const Object = struct {
+    verts: []Vertex,
+    indices: []u8,
+    index_start: ?usize,
+};
+
+const Vertex = struct {
+    position: zm.Vec3f,
+    color: zm.Vec3f,
+};
 
 const State = struct {
     window: ?*c.SDL_Window,
@@ -43,489 +51,177 @@ const State = struct {
     screen_h: c_int,
 
     allocator: std.mem.Allocator,
+    renderer: ?Renderer,
 
     gl_ctx: c.SDL_GLContext,
     gl_procs: ?gl.ProcTable,
-
-    offset: zm.Vec3f = .zero(),
-    projection_matrix: zm.Mat4f = .perspectiveLH(450.0, 4.0 / 3.0, 0.1, 10.0),
-    objects: ?[]Drawable,
 };
 
-const Drawable = struct {
-    draw_fn: *const fn (*Drawable) anyerror!void,
-
-    model_matrix: zm.Mat4f,
-    offset: zm.Vec3f,
-
-    vertices: ?[]Vertex,
-    indices: ?[]u8,
-
-    projection_uniform: ?c_int,
-    model_uniform: ?c_int,
-    vbo: ?c_uint,
-    program: ?c_uint,
-    vertex_shader_source: ?[]u8,
-    fragment_shader_source: ?[]u8,
-    vao: ?c_uint, // alignment of the vertecies in vbo
-    ibo: ?c_uint, // indexes. Maps indices to vertices, to enable reusing vertex data.
+const RenderError = error{
+    AlreadyFlushed,
 };
 
-const Vertex = extern struct {
-    position: [3]f32,
-    color: [3]f32,
+const Renderer = struct {
+    const self = @This();
+    verts: ?VertexList = null,
+    indices: ?ByteList = null,
+    program: ?Program = null,
+
+    no_verts: u32 = 0,
+    allocator: Allocator,
+    flushed: bool = false,
+
+    pub const Config = struct {
+        allocator: Allocator,
+        program: Program,
+    };
+    /// initialize all requiered values,rest null
+    pub fn init(cfg: Config) !self {
+        var renderer: Renderer = .{
+            .allocator = cfg.allocator,
+        };
+        renderer.verts = try VertexList.initCapacity(renderer.allocator, 6);
+        errdefer renderer.verts.?.deinit(renderer.allocator);
+
+        renderer.indices = try ByteList.initCapacity(renderer.allocator, 12);
+        errdefer renderer.indices.?.deinit(renderer.allocator);
+
+        renderer.program = cfg.program;
+
+        return renderer;
+    }
+    pub fn queue(r: *self, obj: *Object) !void {
+        obj.index_start = r.no_verts;
+        defer r.no_verts += obj.verts.len;
+
+        for (obj.indices) |*idx| {
+            idx += r.no_verts;
+        }
+
+        try r.indices.appendSlice(r.allocator, obj.indices);
+        try r.verts.appendSlice(r.allocator, obj.verts);
+    }
+    pub fn flush(r: *self) !void {
+        if (r.flushed) return RenderError.AlreadyFlushed;
+
+        gl.BindVertexArray(r.program.?.vao.?);
+        gl.BindBuffer(gl.ARRAY_BUFFER, r.program.?.vbo.?);
+        gl.BufferData(gl.ARRAY_BUFFER, @intCast(r.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(r.verts.?.items), gl.DYNAMIC_DRAW);
+
+        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.program.?.ibo.?);
+        gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, @intCast(r.indices.?.items.len * @sizeOf(u8)), @ptrCast(r.indices.?.items), gl.STATIC_DRAW);
+
+        defer r.flushed = true;
+    }
+
+    pub fn update(r: *self, obj: Object) !void {
+        r.verts.replaceRangeAssumeCapacity(obj.index_start, obj.verts.len, obj.verts);
+    }
+    pub fn draw(r: *self) !void {
+        _ = r;
+    }
+
+    pub fn deinit(r: *self) !void {
+        if (r.indices != null)
+            r.indices.?.deinit(r.allocator);
+        r.indices = null;
+        if (r.verts != null)
+            r.verts.?.deinit(r.allocator);
+        r.verts = null;
+        r.program = null;
+        r.no_verts = 0;
+        r.flushed = false;
+    }
 };
+
+const Program = struct {
+    program: ?c_uint = null,
+    vao: ?c_uint = null,
+    vbo: ?c_uint = null,
+    ibo: ?c_uint = null,
+
+    pub const Config = struct {
+        vertex_src_path: []const u8,
+        fragment_src_path: []const u8,
+    };
+
+    pub fn init(allocator: Allocator, cfg: Config) !Program {
+        var program = Program{};
+
+        const vertex_glsl_src = try read_in_shader(allocator, cfg.vertex_src_path);
+        defer allocator.free(vertex_glsl_src);
+        const fragment_glsl_src = try read_in_shader(allocator, cfg.fragment_src_path);
+        defer allocator.free(fragment_glsl_src);
+        program.program = try create_graphics_pipeline(vertex_glsl_src, fragment_glsl_src);
+
+        program.vao = undefined;
+        gl.GenVertexArrays(1, @ptrCast((&program.vao.?)));
+        gl.BindVertexArray(program.vao.?);
+        defer gl.BindVertexArray(0);
+
+        program.ibo = undefined;
+        program.vbo = undefined;
+        gl.GenBuffers(1, @ptrCast((&program.vbo.?)));
+        gl.GenBuffers(1, @ptrCast((&program.ibo.?)));
+        try check_gl_error();
+
+        {
+            const attrib_location: c_uint = @intCast(gl.GetAttribLocation(program.program.?, "a_Position"));
+            gl.EnableVertexAttribArray(attrib_location);
+            gl.VertexAttribPointer(
+                // zig fmt: off
+                attrib_location,
+                @typeInfo(@FieldType(zm.Vec3f, "data")).array.len,
+                gl.FLOAT,
+                gl.FALSE,
+                @sizeOf(Vertex),
+                @offsetOf(Vertex, "position"));
+                // zig fmt: on
+        }
+        try check_gl_error(); // no error
+        {
+            const attrib_location: c_uint = @intCast(gl.GetAttribLocation(program.program.?, "a_Color"));
+            gl.EnableVertexAttribArray(attrib_location);
+            try check_gl_error(); // no error
+            gl.VertexAttribPointer(
+                // zig fmt: off
+                attrib_location,
+                @typeInfo(@FieldType(zm.Vec3f, "data")).array.len,
+                gl.FLOAT,
+                gl.FALSE,
+                @sizeOf(Vertex),
+                @offsetOf(Vertex, "color"));
+                // zig fmt: on
+        }
+
+        try check_gl_error(); // error 1282
+        return program;
+    }
+    pub fn deinit(p: *Program) !void {
+        if (p.vao != null)
+            gl.DeleteVertexArrays(1, (&p.vbo.?)[0..1]);
+        p.vao = null;
+        if (p.ibo != null)
+            gl.DeleteBuffers(1, (&p.ibo.?)[0..1]);
+        p.ibo = null;
+        if (p.vbo != null)
+            gl.DeleteBuffers(1, (&p.vbo.?)[0..1]);
+        p.vbo = null;
+        if (p.program != null)
+            gl.DeleteProgram(p.program.?);
+        p.program = null;
+    }
+};
+
 var state: State = .{
+    .renderer = null,
     .allocator = undefined,
     .window = null,
     .screen_w = Window_Width,
     .screen_h = Window_Height,
     .gl_ctx = null,
     .gl_procs = null,
-    .objects = null,
 };
-
-fn gen_cube(vertices: *VertexList, indices: *ByteList, side: f32) !void {
-    const half = side / 2.0;
-
-    const face_colors = [_][3]f32{
-        .{ 1, 0, 0 }, // Front - Red
-        .{ 0, 1, 0 }, // Back - Green
-        .{ 0, 0, 1 }, // Left - Blue
-        .{ 1, 1, 0 }, // Right - Yellow
-        .{ 1, 0, 1 }, // Top - Magenta
-        .{ 0, 1, 1 }, // Bottom - Cyan
-    };
-
-    const faces = [_][4][3]f32{
-        // Front
-        .{
-            .{ -half, -half, half },
-            .{ half, -half, half },
-            .{ half, half, half },
-            .{ -half, half, half },
-        },
-        // Back
-        .{
-            .{ half, -half, -half },
-            .{ -half, -half, -half },
-            .{ -half, half, -half },
-            .{ half, half, -half },
-        },
-        // Left
-        .{
-            .{ -half, -half, -half },
-            .{ -half, -half, half },
-            .{ -half, half, half },
-            .{ -half, half, -half },
-        },
-        // Right
-        .{
-            .{ half, -half, half },
-            .{ half, -half, -half },
-            .{ half, half, -half },
-            .{ half, half, half },
-        },
-        // Top
-        .{
-            .{ -half, half, half },
-            .{ half, half, half },
-            .{ half, half, -half },
-            .{ -half, half, -half },
-        },
-        // Bottom
-        .{
-            .{ -half, -half, -half },
-            .{ half, -half, -half },
-            .{ half, -half, half },
-            .{ -half, -half, half },
-        },
-    };
-
-    var vertex_index: u8 = @intCast(vertices.items.len);
-
-    for (faces, 0..) |face, i| {
-        const color = face_colors[i];
-
-        // Add 4 vertices per face
-        for (face) |pos| {
-            try vertices.append(state.allocator, Vertex{
-                .position = pos,
-                .color = color,
-            });
-        }
-
-        // Add 2 triangles (6 indices) per face
-        const base = vertex_index;
-        try indices.appendSlice(state.allocator, &[_]u8{
-            base,     base + 1, base + 2,
-            base + 2, base + 3, base,
-        });
-
-        vertex_index += 4;
-    }
-}
-
-fn triangles_init() !Drawable {
-    {
-        var obj: Drawable = .{
-            // zif fmt: off
-            .model_uniform = null,
-            .projection_uniform = null,
-            .offset = zm.Vec3f.zero(),
-            .model_matrix = zm.Mat4f.identity(),
-            .program = null,
-            .fragment_shader_source = null,
-            .vertex_shader_source = null,
-            .vao = null,
-            .vertices = null,
-            .vbo = null,
-            .draw_fn = triangle_draw,
-            .ibo = null,
-            .indices = null,
-            // zif fmt: on
-        };
-
-        obj.vertex_shader_source = try read_in_shader(Triangles_Vertex_Shader_Path);
-        obj.fragment_shader_source = try read_in_shader(Triangles_Fragment_Shader_Path);
-
-        obj.program = try create_graphics_pipeline(obj.vertex_shader_source.?, obj.fragment_shader_source.?);
-
-        //    const vertices = [_]Vertex{
-        //        Vertex{ .color = .{ 0, 1, 0 }, .position = .{ -0.5, -0.5, 0 } },
-        //        Vertex{ .color = .{ 1, 0, 0 }, .position = .{ 0.5, -0.5, 0 } },
-        //        Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0, 0.5, 0 } },
-        //        Vertex{ .color = .{ 0, 0, 1 }, .position = .{ 0.5, 0.5, 0 } },
-        //        Vertex{ .color = .{ 1, 0, 0 }, .position = .{ -0.5, 0.5, 0 } },
-        //    };
-
-        //        const indices = [_]u8{
-        //            0, 1, 2,
-        //            2, 1, 3,
-        //            4, 0, 2,
-        //        };
-
-        var vertices_list = try VertexList.initCapacity(state.allocator, 12);
-        var indices_list = try ByteList.initCapacity(state.allocator, 6);
-
-        try gen_cube(&vertices_list, &indices_list, 0.1);
-
-        //try vertices_list.appendSlice(state.allocator, vertices[0..]);
-        //try indices_list.appendSlice(state.allocator, indices[0..]);
-
-        obj.vertices = try vertices_list.toOwnedSlice(state.allocator);
-        obj.indices = try indices_list.toOwnedSlice(state.allocator);
-
-        vertices_list.deinit(state.allocator);
-        indices_list.deinit(state.allocator);
-
-        obj.vao = undefined;
-
-        gl.GenVertexArrays(1, (&obj.vao.?)[0..1]);
-        gl.BindVertexArray(obj.vao.?);
-        defer gl.BindVertexArray(0);
-
-        obj.vbo = undefined;
-        gl.GenBuffers(1, (&obj.vbo.?)[0..1]);
-
-        obj.ibo = undefined;
-        gl.GenBuffers(1, (&obj.ibo.?)[0..1]);
-
-        gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
-        defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
-
-        const u_model_address = gl.GetUniformLocation(obj.program.?, "u_ModelMatrix");
-        if (u_model_address >= 0) {
-            obj.model_uniform = @intCast(u_model_address);
-        } else gl_log.err("unable to find u_ModelMatrix\n", .{});
-
-        const u_proj_address = gl.GetUniformLocation(obj.program.?, "u_ProjectionMatrix");
-        if (u_proj_address >= 0) {
-            obj.projection_uniform = @intCast(u_proj_address);
-        } else gl_log.err("unable to find u_ProjectionMatrix\n", .{});
-        gl.BufferData(
-            gl.ARRAY_BUFFER,
-            @intCast(obj.vertices.?.len * @sizeOf(Vertex)),
-            @ptrCast(obj.vertices.?.ptr),
-            gl.STATIC_DRAW,
-        );
-        try check_gl_error();
-
-        {
-            const position_attrib = gl.GetAttribLocation(obj.program.?, "a_Position");
-            if (position_attrib == -1) return error.GlPositionAttribInvalid;
-            gl.EnableVertexAttribArray(@intCast(position_attrib));
-
-            // zig fmt: off
-    gl.VertexAttribPointer(
-        @intCast(position_attrib),
-        @typeInfo(@FieldType(Vertex, "position")).array.len,
-        gl.FLOAT,
-        gl.FALSE,
-        @sizeOf(Vertex),
-        @offsetOf(Vertex, "position"),
-        );
-    // zig fmt: on
-        }
-
-        {
-            const color_attrib = gl.GetAttribLocation(obj.program.?, "a_Color");
-            if (color_attrib == -1) return error.GlPositionAttribInvalid;
-            gl.EnableVertexAttribArray(@intCast(color_attrib));
-
-            // zig fmt: off
-        gl.VertexAttribPointer(
-            @intCast(color_attrib),
-            @typeInfo(@FieldType(Vertex, "color")).array.len,
-            gl.FLOAT,
-            gl.FALSE,
-            @sizeOf(Vertex),
-            @offsetOf(Vertex, "color"),
-            );
-        // zig fmt: on
-        }
-
-        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, obj.ibo.?);
-        gl.BufferData(
-            gl.ELEMENT_ARRAY_BUFFER,
-            @intCast(obj.indices.?.len * @sizeOf(u8)),
-            @ptrCast(obj.indices.?.ptr),
-            gl.STATIC_DRAW,
-        );
-        try check_gl_error();
-        return obj;
-    }
-}
-
-fn print_4x4(mat: zm.Mat4f) void {
-    std.debug.print("4x4 matrix:\n", .{});
-    for (mat.data) |row| {
-        std.debug.print("{d} {d} {d} {d}\n", .{ row[0], row[1], row[2], row[3] });
-    }
-    std.debug.print("\n", .{});
-}
-
-fn triangle_draw(obj: *Drawable) anyerror!void {
-    gl.UseProgram(obj.program.?);
-    try check_gl_error();
-    defer gl.UseProgram(0);
-
-    gl.BindVertexArray(obj.vao.?);
-    defer gl.BindVertexArray(0);
-
-    gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
-    defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
-
-    obj.offset.addAssign(state.offset);
-    obj.model_matrix = .translationVec3(obj.offset);
-    //print_4x4(obj.model_matrix);
-
-    const flat: [*]const [16]f32 =
-        @ptrCast(&obj.model_matrix.data);
-    gl.UniformMatrix4fv(obj.model_uniform.?, 1, gl.TRUE, flat);
-
-    const flat_projection: [*]const [16]f32 =
-        @ptrCast(&state.projection_matrix);
-    gl.UniformMatrix4fv(obj.projection_uniform.?, 1, gl.TRUE, flat_projection);
-
-    //    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.vertices.?.len * @sizeOf(Vertex)), @ptrCast(state.vertices.?));
-    gl.DrawElements(gl.TRIANGLES, @intCast(obj.indices.?.len), gl.UNSIGNED_BYTE, 0);
-}
-
-fn line_draw(obj: *Drawable) anyerror!void {
-    gl.UseProgram(obj.program.?);
-    try check_gl_error();
-    defer gl.UseProgram(0);
-
-    gl.BindVertexArray(obj.vao.?);
-    defer gl.BindVertexArray(0);
-
-    gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
-    defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
-    obj.offset.addAssign(state.offset);
-    //
-    obj.model_matrix = .translationVec3(obj.offset);
-
-    const flat: [*]const [16]f32 =
-        @ptrCast(&obj.model_matrix.data);
-    gl.UniformMatrix4fv(obj.model_uniform.?, 1, gl.TRUE, flat);
-
-    const flat_projection: [*]const [16]f32 =
-        @ptrCast(&state.projection_matrix);
-    gl.UniformMatrix4fv(obj.projection_uniform.?, 1, gl.TRUE, flat_projection);
-
-    //    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.vertices.?.len * @sizeOf(Vertex)), @ptrCast(state.vertices.?));
-    gl.DrawArrays(gl.LINES, 0, @intCast(obj.vertices.?.len));
-}
-
-fn gen_grid_xz(vertices: *VertexList, offset: f32) !void {
-    var x: f32 = -1.0;
-    while (x <= 1) : (x += offset) {
-        x = @round(x * 1000) / 1000;
-        const start = Vertex{
-            .color = if (x != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
-            .position = .{ x, 0, -1 },
-        };
-        const end = Vertex{
-            .color = if (x != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
-            .position = .{ x, 0, 1 },
-        };
-        try vertices.append(state.allocator, start);
-        try vertices.append(state.allocator, end);
-    }
-
-    var z: f32 = -1.0;
-    while (z <= 1) : (z += offset) {
-        z = @round(z * 1000) / 1000;
-        const start = Vertex{
-            .color = if (z != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
-            .position = .{ -1, 0, z },
-        };
-        const end = Vertex{
-            .color = if (z != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
-            .position = .{ 1, 0, z },
-        };
-        try vertices.append(state.allocator, start);
-        try vertices.append(state.allocator, end);
-    }
-}
-fn gen_grid_xy(vertices: *VertexList, offset: f32) !void {
-    var x: f32 = -1.0;
-    while (x <= 1) : (x += offset) {
-        x = @round(x * 1000) / 1000;
-        const start = Vertex{
-            .color = if (x != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
-            .position = .{ x, -1, 0 },
-        };
-        const end = Vertex{
-            .color = if (x != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
-            .position = .{ x, 1, 0 },
-        };
-        try vertices.append(state.allocator, start);
-        try vertices.append(state.allocator, end);
-    }
-
-    var y: f32 = -1.0;
-    while (y <= 1) : (y += offset) {
-        y = @round(y * 1000) / 1000;
-        const start = Vertex{
-            .color = if (y != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
-            .position = .{ -1, y, 0 },
-        };
-        const end = Vertex{
-            .color = if (y != 0) .{ 1, 1, 1 } else .{ 1, 0, 0 },
-            .position = .{ x, y, 0 },
-        };
-        try vertices.append(state.allocator, start);
-        try vertices.append(state.allocator, end);
-    }
-}
-
-fn lines_init() !Drawable {
-    var obj: Drawable = .{
-        // zif fmt: off
-        .program = null,
-        .model_matrix = zm.Mat4f.identity(),
-        .offset = zm.Vec3f.zero(),
-        .model_uniform = null,
-        .projection_uniform = null,
-        .fragment_shader_source = null,
-        .vertex_shader_source = null,
-        .vao = null,
-        .vertices = null,
-        .vbo = null,
-        .draw_fn = line_draw,
-        .ibo = null,
-        .indices = null,
-        // zif fmt: on
-    };
-
-    obj.vertex_shader_source = try read_in_shader(Lines_Vertex_Shader_Path);
-    obj.fragment_shader_source = try read_in_shader(Lines_Fragment_Shader_Path);
-
-    obj.program = try create_graphics_pipeline(obj.vertex_shader_source.?, obj.fragment_shader_source.?);
-
-    var vertices_list = try VertexList.initCapacity(state.allocator, 4);
-
-    try gen_grid_xz(&vertices_list, 0.1);
-    obj.vertices = try vertices_list.toOwnedSlice(state.allocator);
-
-    vertices_list.deinit(state.allocator);
-
-    obj.vao = undefined;
-
-    gl.GenVertexArrays(1, (&obj.vao.?)[0..1]);
-    gl.BindVertexArray(obj.vao.?);
-    defer gl.BindVertexArray(0);
-
-    obj.vbo = undefined;
-    gl.GenBuffers(1, (&obj.vbo.?)[0..1]);
-
-    gl.BindBuffer(gl.ARRAY_BUFFER, obj.vbo.?);
-    defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
-
-    const u_model_address = gl.GetUniformLocation(obj.program.?, "u_ModelMatrix");
-    if (u_model_address >= 0) {
-        obj.model_uniform = u_model_address;
-    } else gl_log.err("unable to find u_ModelMatrix\n", .{});
-
-    const u_proj_addr = gl.GetUniformLocation(obj.program.?, "u_ProjectionMatrix");
-    if (u_proj_addr >= 0) {
-        obj.projection_uniform = u_proj_addr;
-    } else gl_log.err("unable to find u_ProjectionMatrix\n", .{});
-
-    gl.BufferData(
-        gl.ARRAY_BUFFER,
-        @intCast(obj.vertices.?.len * @sizeOf(Vertex)),
-        @ptrCast(obj.vertices.?.ptr),
-        gl.STATIC_DRAW,
-    );
-    try check_gl_error();
-
-    {
-        const position_attrib = gl.GetAttribLocation(obj.program.?, "a_Position");
-        if (position_attrib == -1) return error.GlPositionAttribInvalid;
-        gl.EnableVertexAttribArray(@intCast(position_attrib));
-
-        // zig fmt: off
-    gl.VertexAttribPointer(
-        @intCast(position_attrib),
-        @typeInfo(@FieldType(Vertex, "position")).array.len,
-        gl.FLOAT,
-        gl.FALSE,
-        @sizeOf(Vertex),
-        @offsetOf(Vertex, "position"),
-        );
-    // zig fmt: on
-    }
-
-    {
-        const color_attrib = gl.GetAttribLocation(obj.program.?, "a_Color");
-        if (color_attrib == -1) return error.GlPositionAttribInvalid;
-        gl.EnableVertexAttribArray(@intCast(color_attrib));
-
-        // zig fmt: off
-        gl.VertexAttribPointer(
-            @intCast(color_attrib),
-            @typeInfo(@FieldType(Vertex, "color")).array.len,
-            gl.FLOAT,
-            gl.FALSE,
-            @sizeOf(Vertex),
-            @offsetOf(Vertex, "color"),
-            );
-        // zig fmt: on
-    }
-
-    //    gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.ibo.?);
-    //    gl.BufferData(
-    //        gl.ELEMENT_ARRAY_BUFFER,
-    //        @intCast(state.indices.?.len * @sizeOf(u8)),
-    //        @ptrCast(state.indices.?.ptr),
-    //        gl.STATIC_DRAW,
-    //    );
-    try check_gl_error();
-    return obj;
-}
 
 fn create_graphics_pipeline(vertex_shader_src: []const u8, fragment_shader_src: []const u8) !c_uint {
     const program = gl.CreateProgram();
@@ -625,23 +321,19 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     gl_log.info("Version:{s}", .{gl.GetString(gl.VERSION) orelse "null"});
     gl_log.info("Shading language:{s}", .{gl.GetString(gl.SHADING_LANGUAGE_VERSION) orelse "null"});
 
-    //    try read_in_shader(gl.FRAGMENT_SHADER);
-    //    try read_in_shader(gl.VERTEX_SHADER);
-    //
-    //    try create_graphics_pipeline();
-    //    try vertex_specification();
+    const program: Program = try .init(state.allocator, Program.Config{
+        // zig fmt: off
+        .fragment_src_path = Fragment_Shader_Path,
+        .vertex_src_path = Vertex_Shader_Path }
+        // zig fmt: on
+    );
 
-    state.objects = try state.allocator.alloc(Drawable, 2);
-
-    state.objects.?[Lines_Index] = try lines_init();
-    state.objects.?[Triangles_Index] = try triangles_init();
+    state.renderer = try Renderer.init(.{ .allocator = state.allocator, .program = program });
 
     return c.SDL_APP_CONTINUE;
 }
 
-fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
-    _ = appstate;
-
+fn pre_draw() !void {
     try check_gl_error();
     gl.Enable(gl.DEPTH_TEST);
     gl.DepthFunc(gl.LESS);
@@ -650,27 +342,15 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
 
     gl.ClearColor(0.1, 0.1, 0.1, 1);
     gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+}
 
-    if (state.objects) |_| {
-        for (state.objects.?) |*obj| {
-            try obj.draw_fn(obj);
-        }
-    }
+fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
+    _ = appstate;
 
-    //    gl.UseProgram(program.?);
-    //    try check_gl_error();
-    //
-    //    gl.BindVertexArray(state.vao.?);
-    //    gl.BindBuffer(gl.ARRAY_BUFFER, state.vbo_vert.?);
-    //
-    //    gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(state.vertices.?.len * @sizeOf(Vertex)), @ptrCast(state.vertices.?));
-    //
-    //    gl.DrawElements(gl.TRIANGLES, @intCast(state.indices.?.len), gl.UNSIGNED_BYTE, 0);
-    //    gl.DrawArrays(gl.TRIANGLES, 0, @intCast(state.vertices.?.len));
+    try pre_draw();
 
     try errify(c.SDL_GL_SwapWindow(state.window.?));
     try check_gl_error();
-    state.offset = .zero();
     return c.SDL_APP_CONTINUE;
 }
 
@@ -685,22 +365,13 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
         sdl_log.debug(":window resized\n", .{});
         _ = c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h);
         const aspect: f32 = @as(f32, @floatFromInt(state.screen_w)) / @as(f32, @floatFromInt(state.screen_h));
-        state.projection_matrix = .perspectiveRH(45.0, aspect, 0.1, 10.0);
+        _ = aspect;
     }
 
     if (event.type == c.SDL_EVENT_KEY_DOWN) {
-        var offset: zm.Vec3f = .zero();
         switch (event.key.scancode) {
-            c.SDL_SCANCODE_A => offset.addAssign(.{ .data = .{ -0.1, 0, 0 } }),
-            c.SDL_SCANCODE_D => offset.addAssign(.{ .data = .{ 0.1, 0, 0 } }),
-            c.SDL_SCANCODE_S => offset.addAssign(.{ .data = .{ 0, -0.1, 0 } }),
-            c.SDL_SCANCODE_W => offset.addAssign(.{ .data = .{ 0, 0.1, 0 } }),
-            c.SDL_SCANCODE_UP => offset.addAssign(.{ .data = .{ 0, 0, -0.1 } }),
-            c.SDL_SCANCODE_DOWN => offset.addAssign(.{ .data = .{ 0, 0, 0.1 } }),
-
             else => {},
         }
-        state.offset = offset;
     }
 
     return c.SDL_APP_CONTINUE;
@@ -714,44 +385,15 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
         sdl_log.err("{s}\n", .{c.SDL_GetError()});
     };
 
-    for (state.objects.?) |*obj| {
-        if (obj.fragment_shader_source != null)
-            state.allocator.free(obj.fragment_shader_source.?);
-        if (obj.vertex_shader_source != null)
-            state.allocator.free(obj.vertex_shader_source.?);
-        if (obj.vbo != null)
-            gl.DeleteBuffers(1, (&obj.vbo.?)[0..1]);
-        if (obj.ibo != null)
-            gl.DeleteBuffers(1, (&obj.ibo.?)[0..1]);
-        if (obj.vao != null)
-            gl.DeleteVertexArrays(1, (&obj.vao.?)[0..1]);
-        if (obj.ibo != null)
-            gl.DeleteBuffers(1, (&obj.ibo.?)[0..1]);
-        if (obj.program != null)
-            gl.DeleteProgram(obj.program.?);
-        if (obj.vertices != null)
-            state.allocator.free(obj.vertices.?);
-        if (obj.indices != null)
-            state.allocator.free(obj.indices.?);
+    check_gl_error() catch |err| {
+        gl_log.err("error code while qutting{any}\n", .{@errorName(err)});
+    };
 
-        obj.* = Drawable{
-            .model_matrix = .identity(),
-            .model_uniform = null,
-            .projection_uniform = null,
-            .offset = .zero(),
-            .fragment_shader_source = null,
-            .ibo = null,
-            .vertex_shader_source = null,
-            .draw_fn = undefined,
-            .indices = null,
-            .program = null,
-            .vao = null,
-            .vbo = null,
-            .vertices = null,
-        };
+    if (state.renderer != null) {
+        if (state.renderer.?.program != null)
+            try state.renderer.?.program.?.deinit();
+        try state.renderer.?.deinit();
     }
-    if (state.objects != null) state.allocator.free(state.objects.?);
-
     if (state.gl_procs != null)
         gl.makeProcTableCurrent(null);
     if (state.gl_ctx != null)
@@ -768,7 +410,7 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
         c.SDL_DestroyWindow(state.window.?);
     c.SDL_Quit();
     state = State{
-        .objects = null,
+        .renderer = undefined,
         .window = null,
         .screen_w = Window_Width,
         .screen_h = Window_Height,
@@ -778,8 +420,8 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
     };
 }
 
-fn read_in_shader(shader_path: []const u8) ![]u8 {
-    return std.fs.cwd().readFileAlloc(state.allocator, shader_path, std.math.maxInt(usize));
+fn read_in_shader(alloc: Allocator, shader_path: []const u8) ![]u8 {
+    return std.fs.cwd().readFileAlloc(alloc, shader_path, std.math.maxInt(usize));
 }
 
 pub fn main() !u8 {
