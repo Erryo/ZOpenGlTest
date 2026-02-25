@@ -34,17 +34,6 @@ const VertexList = std.ArrayList(Vertex);
 const ObjectList = std.ArrayList(Object);
 const ByteList = std.ArrayList(u8);
 
-const Object = struct {
-    verts: []Vertex,
-    indices: []u8,
-    index_start: ?usize,
-};
-
-const Vertex = struct {
-    position: zm.Vec3f,
-    color: zm.Vec3f,
-};
-
 const State = struct {
     window: ?*c.SDL_Window,
     screen_w: c_int,
@@ -63,11 +52,12 @@ const RenderError = error{
 
 const Renderer = struct {
     const self = @This();
+    objects: ?ObjectList = null,
     verts: ?VertexList = null,
     indices: ?ByteList = null,
     program: ?Program = null,
 
-    no_verts: u32 = 0,
+    no_verts: u8 = 0,
     allocator: Allocator,
     flushed: bool = false,
 
@@ -80,6 +70,9 @@ const Renderer = struct {
         var renderer: Renderer = .{
             .allocator = cfg.allocator,
         };
+        renderer.objects = try ObjectList.initCapacity(renderer.allocator, 2);
+        errdefer renderer.objects.?.deinit(renderer.allocator);
+
         renderer.verts = try VertexList.initCapacity(renderer.allocator, 6);
         errdefer renderer.verts.?.deinit(renderer.allocator);
 
@@ -92,18 +85,22 @@ const Renderer = struct {
     }
     pub fn queue(r: *self, obj: *Object) !void {
         obj.index_start = r.no_verts;
-        defer r.no_verts += obj.verts.len;
+        defer r.no_verts += @intCast(obj.verts.len);
 
         for (obj.indices) |*idx| {
-            idx += r.no_verts;
+            idx.* += r.no_verts;
         }
 
-        try r.indices.appendSlice(r.allocator, obj.indices);
-        try r.verts.appendSlice(r.allocator, obj.verts);
+        try r.objects.?.append(r.allocator, obj.*);
+        try r.indices.?.appendSlice(r.allocator, obj.indices);
+        try r.verts.?.appendSlice(r.allocator, obj.verts);
     }
     pub fn flush(r: *self) !void {
         if (r.flushed) return RenderError.AlreadyFlushed;
 
+        for (state.renderer.?.verts.?.items) |vert| {
+            gl_log.debug("verts:{any}\n", .{vert.position});
+        }
         gl.BindVertexArray(r.program.?.vao.?);
         gl.BindBuffer(gl.ARRAY_BUFFER, r.program.?.vbo.?);
         gl.BufferData(gl.ARRAY_BUFFER, @intCast(r.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(r.verts.?.items), gl.DYNAMIC_DRAW);
@@ -115,10 +112,15 @@ const Renderer = struct {
     }
 
     pub fn update(r: *self, obj: Object) !void {
-        r.verts.replaceRangeAssumeCapacity(obj.index_start, obj.verts.len, obj.verts);
+        r.verts.?.replaceRangeAssumeCapacity(obj.index_start, obj.verts.len, obj.verts);
     }
     pub fn draw(r: *self) !void {
-        _ = r;
+        try check_gl_error();
+        gl.BindVertexArray(r.program.?.vao.?);
+        gl.BindBuffer(gl.ARRAY_BUFFER, r.program.?.vbo.?);
+        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.program.?.ibo.?);
+
+        gl.DrawElements(gl.TRIANGLES, @intCast(r.verts.?.items.len), gl.UNSIGNED_BYTE, 0);
     }
 
     pub fn deinit(r: *self) !void {
@@ -127,6 +129,15 @@ const Renderer = struct {
         r.indices = null;
         if (r.verts != null)
             r.verts.?.deinit(r.allocator);
+
+        if (r.objects != null) {
+            for (r.objects.?.items) |obj| {
+                r.allocator.free(obj.verts);
+                r.allocator.free(obj.indices);
+            }
+            r.objects.?.deinit(r.allocator);
+        }
+        r.objects = null;
         r.verts = null;
         r.program = null;
         r.no_verts = 0;
@@ -163,6 +174,7 @@ const Program = struct {
         program.vbo = undefined;
         gl.GenBuffers(1, @ptrCast((&program.vbo.?)));
         gl.GenBuffers(1, @ptrCast((&program.ibo.?)));
+        gl.BindBuffer(gl.ARRAY_BUFFER, program.vbo.?);
         try check_gl_error();
 
         {
@@ -211,6 +223,33 @@ const Program = struct {
             gl.DeleteProgram(p.program.?);
         p.program = null;
     }
+};
+const Object = struct {
+    verts: []Vertex,
+    indices: []u8,
+    index_start: ?usize,
+
+    pub fn gen_quad(allocator: Allocator) !Object {
+        var obj: Object = undefined;
+        const vertices = [_]Vertex{
+            Vertex{ .position = .{ .data = .{ -1, 1, 0 } }, .color = .{ .data = .{ 1, 0, 0 } } },
+            Vertex{ .position = .{ .data = .{ -1, -1, 0 } }, .color = .{ .data = .{ 1, 1, 0 } } },
+            Vertex{ .position = .{ .data = .{ 1, -1, 0 } }, .color = .{ .data = .{ 0, 1, 0 } } },
+            Vertex{ .position = .{ .data = .{ 1, 1, 0 } }, .color = .{ .data = .{ 0, 0, 1 } } },
+        };
+
+        const indices = [_]u8{ 0, 1, 2, 0, 2, 3 };
+
+        obj.verts = try allocator.dupe(Vertex, &vertices);
+        obj.indices = try allocator.dupe(u8, &indices);
+        obj.index_start = null;
+        return obj;
+    }
+};
+
+const Vertex = struct {
+    position: zm.Vec3f,
+    color: zm.Vec3f,
 };
 
 var state: State = .{
@@ -329,25 +368,30 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     );
 
     state.renderer = try Renderer.init(.{ .allocator = state.allocator, .program = program });
+    var quad: Object = try .gen_quad(state.allocator);
+    try state.renderer.?.queue(&quad);
 
+    try state.renderer.?.flush();
     return c.SDL_APP_CONTINUE;
 }
 
 fn pre_draw() !void {
     try check_gl_error();
-    gl.Enable(gl.DEPTH_TEST);
-    gl.DepthFunc(gl.LESS);
+    gl.Disable(gl.DEPTH_TEST);
     gl.Disable(gl.CULL_FACE);
     gl.Viewport(0, 0, state.screen_w, state.screen_h);
 
     gl.ClearColor(0.1, 0.1, 0.1, 1);
-    gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.Clear(gl.COLOR_BUFFER_BIT);
 }
 
 fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
 
     try pre_draw();
+    if (state.renderer) |*renderer| {
+        try renderer.draw();
+    }
 
     try errify(c.SDL_GL_SwapWindow(state.window.?));
     try check_gl_error();
@@ -362,10 +406,10 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
     }
 
     if (event.type == c.SDL_EVENT_WINDOW_RESIZED) {
-        sdl_log.debug(":window resized\n", .{});
         _ = c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h);
         const aspect: f32 = @as(f32, @floatFromInt(state.screen_w)) / @as(f32, @floatFromInt(state.screen_h));
         _ = aspect;
+        sdl_log.debug(":window resized{d};{d}\n", .{ state.screen_w, state.screen_h });
     }
 
     if (event.type == c.SDL_EVENT_KEY_DOWN) {
