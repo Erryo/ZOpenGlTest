@@ -57,6 +57,8 @@ const Renderer = struct {
     indices: ?ByteList = null,
     program: ?Program = null,
 
+    matrix: zm.Mat4f = .identity(),
+
     no_verts: u8 = 0,
     allocator: Allocator,
     flushed: bool = false,
@@ -101,6 +103,7 @@ const Renderer = struct {
         for (state.renderer.?.verts.?.items) |vert| {
             gl_log.debug("verts:{any}\n", .{vert.position});
         }
+
         gl.BindVertexArray(r.program.?.vao.?);
         gl.BindBuffer(gl.ARRAY_BUFFER, r.program.?.vbo.?);
         gl.BufferData(gl.ARRAY_BUFFER, @intCast(r.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(r.verts.?.items), gl.DYNAMIC_DRAW);
@@ -111,16 +114,22 @@ const Renderer = struct {
         defer r.flushed = true;
     }
 
-    pub fn update(r: *self, obj: Object) !void {
-        r.verts.?.replaceRangeAssumeCapacity(obj.index_start, obj.verts.len, obj.verts);
+    pub fn update(r: *self, obj: *Object) !void {
+        r.verts.?.replaceRangeAssumeCapacity(obj.index_start.?, obj.verts.len, obj.verts);
     }
     pub fn draw(r: *self) !void {
         try check_gl_error();
+        gl.UseProgram(r.program.?.program.?);
         gl.BindVertexArray(r.program.?.vao.?);
         gl.BindBuffer(gl.ARRAY_BUFFER, r.program.?.vbo.?);
         gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.program.?.ibo.?);
+        gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(r.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(r.verts.?.items));
 
-        gl.DrawElements(gl.TRIANGLES, @intCast(r.verts.?.items.len), gl.UNSIGNED_BYTE, 0);
+        const flat: [*]const [16]f32 =
+            @ptrCast(&r.matrix.data);
+        gl.UniformMatrix4fv(r.program.?.matrix_location.?, 1, gl.TRUE, flat);
+
+        gl.DrawElements(gl.TRIANGLES, @intCast(r.indices.?.items.len), gl.UNSIGNED_BYTE, 0);
     }
 
     pub fn deinit(r: *self) !void {
@@ -150,6 +159,7 @@ const Program = struct {
     vao: ?c_uint = null,
     vbo: ?c_uint = null,
     ibo: ?c_uint = null,
+    matrix_location: ?c_int = null,
 
     pub const Config = struct {
         vertex_src_path: []const u8,
@@ -176,6 +186,8 @@ const Program = struct {
         gl.GenBuffers(1, @ptrCast((&program.ibo.?)));
         gl.BindBuffer(gl.ARRAY_BUFFER, program.vbo.?);
         try check_gl_error();
+
+        program.matrix_location = gl.GetUniformLocation(program.program.?, "u_Matrix");
 
         {
             const attrib_location: c_uint = @intCast(gl.GetAttribLocation(program.program.?, "a_Position"));
@@ -368,6 +380,7 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     );
 
     state.renderer = try Renderer.init(.{ .allocator = state.allocator, .program = program });
+    state.renderer.?.matrix = .scaling(0.1, 0.1, 0.1);
     var quad: Object = try .gen_quad(state.allocator);
     try state.renderer.?.queue(&quad);
 
@@ -388,8 +401,14 @@ fn pre_draw() !void {
 fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
 
+    const obj: *Object = &(state.renderer.?.objects.?.items[0]);
+    for (obj.verts) |*v| {
+        v.position.addAssign(.{ .data = .{ 0.1, -0.1, 0 } });
+    }
+
     try pre_draw();
     if (state.renderer) |*renderer| {
+        try renderer.update(obj);
         try renderer.draw();
     }
 
@@ -497,6 +516,10 @@ fn sdlAppEventC(appstate: ?*anyopaque, event: ?*c.SDL_Event) callconv(.c) c.SDL_
 
 fn sdlAppQuitC(appstate: ?*anyopaque, result: c.SDL_AppResult) callconv(.c) void {
     sdlAppQuit(appstate, app_err.load() orelse result);
+}
+
+inline fn c_errify(value: c_int) !void {
+    if (value < 0) return error.CError;
 }
 
 /// Converts the return value of an SDL function to an error union.
