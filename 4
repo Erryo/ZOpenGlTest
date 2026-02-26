@@ -30,9 +30,6 @@ const gl_log = std.log.scoped(.gl);
 const Vertex_Shader_Path = "shaders/vertex_shader.glsl";
 const Fragment_Shader_Path = "shaders/fragment_shader.glsl";
 
-const Perspective_Mat_idx = 0;
-const Scale_Mat_idx = 1;
-
 const VertexList = std.ArrayList(Vertex);
 const ObjectList = std.ArrayList(Object);
 const ByteList = std.ArrayList(u8);
@@ -61,7 +58,6 @@ const Renderer = struct {
     program: ?Program = null,
 
     matrix: zm.Mat4f = .identity(),
-    matrices: ?std.ArrayList(zm.Mat4f) = null,
 
     no_verts: u8 = 0,
     allocator: Allocator,
@@ -84,9 +80,6 @@ const Renderer = struct {
 
         renderer.indices = try ByteList.initCapacity(renderer.allocator, 12);
         errdefer renderer.indices.?.deinit(renderer.allocator);
-
-        renderer.matrices = try std.ArrayList(zm.Mat4f).initCapacity(renderer.allocator, 2);
-        errdefer renderer.matrices.?.deinit(renderer.allocator);
 
         renderer.program = cfg.program;
 
@@ -132,17 +125,6 @@ const Renderer = struct {
         gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.program.?.ibo.?);
         gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(r.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(r.verts.?.items));
 
-        if (r.matrices != null and r.matrices.?.items.len > 0) {
-            var idx: usize = r.matrices.?.items.len - 1;
-            while (idx >= 0) {
-                r.matrix = r.matrix.multiply(r.matrices.?.items[idx]);
-                if (idx == 0)
-                    break
-                else
-                    idx -= 1;
-            }
-        }
-
         const flat: [*]const [16]f32 =
             @ptrCast(&r.matrix.data);
         gl.UniformMatrix4fv(r.program.?.matrix_location.?, 1, gl.TRUE, flat);
@@ -156,10 +138,6 @@ const Renderer = struct {
         r.indices = null;
         if (r.verts != null)
             r.verts.?.deinit(r.allocator);
-
-        if (r.matrices != null)
-            r.matrices.?.deinit(r.allocator);
-        r.matrices = null;
 
         if (r.objects != null) {
             for (r.objects.?.items) |obj| {
@@ -295,17 +273,6 @@ const Object = struct {
         obj.index_start = null;
         return obj;
     }
-
-    pub fn move_to(obj: *Object, target: zm.Vec3f) void {
-        for (obj.verts) |*vert| {
-            vert.*.position = target;
-        }
-    }
-    pub fn move_by(obj: *Object, target: zm.Vec3f) void {
-        for (obj.verts) |*vert| {
-            vert.*.position.addAssign(target);
-        }
-    }
 };
 
 const Vertex = struct {
@@ -429,14 +396,7 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     );
 
     state.renderer = try Renderer.init(.{ .allocator = state.allocator, .program = program });
-
-    var scaling: zm.Mat4f = zm.Mat4f.identity();
-    scaling = .scaling(0.1, 0.1, 0.1);
-    const perspective: zm.Mat4f = .perspectiveLH(45.0, 16 / 9, 0.1, 10);
-
-    try state.renderer.?.matrices.?.append(state.allocator, scaling);
-    try state.renderer.?.matrices.?.append(state.allocator, perspective);
-
+    state.renderer.?.matrix = .scaling(0.1, 0.1, 0.1);
     var quad: Object = try .gen_quad(state.allocator);
     try state.renderer.?.queue(&quad);
 
@@ -458,10 +418,22 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
 
     const obj: *Object = &(state.renderer.?.objects.?.items[0]);
+    var dir: f32 = 1.0;
 
-    for (obj.verts) |vert| {
-        gl_log.debug("verts:{any}\n", .{vert.position});
+    for (obj.verts) |*v| {
+        if (v.position.data[0] > 5.0) {
+            dir = -1.0;
+            v.position.data = .{ 0, 0, 0 };
+            continue;
+        }
+        if (v.position.data[0] < -5.0) {
+            dir = 1.0;
+            v.position.data = .{ 0, 0, 0 };
+            continue;
+        }
+        v.position.addAssign(.{ .data = .{ 0.1 * dir, 0, 0 } });
     }
+
     try pre_draw();
     if (state.renderer) |*renderer| {
         try renderer.update(obj);
@@ -483,18 +455,12 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
     if (event.type == c.SDL_EVENT_WINDOW_RESIZED) {
         _ = c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h);
         const aspect: f32 = @as(f32, @floatFromInt(state.screen_w)) / @as(f32, @floatFromInt(state.screen_h));
-        const perspective: zm.Mat4f = .perspectiveLH(45.0, aspect, 0.1, 10);
-        state.renderer.?.matrices.?.items[Perspective_Mat_idx] = perspective;
+        _ = aspect;
         sdl_log.debug(":window resized{d};{d}\n", .{ state.screen_w, state.screen_h });
     }
 
     if (event.type == c.SDL_EVENT_KEY_DOWN) {
-        const obj: *Object = &(state.renderer.?.objects.?.items[0]);
         switch (event.key.scancode) {
-            c.SDL_SCANCODE_W => obj.move_by(.{ .data = .{ 0, 0.1, 0 } }),
-            c.SDL_SCANCODE_S => obj.move_by(.{ .data = .{ 0, -0.1, 0 } }),
-            c.SDL_SCANCODE_A => obj.move_by(.{ .data = .{ -0.1, 0.0, 0 } }),
-            c.SDL_SCANCODE_D => obj.move_by(.{ .data = .{ 0.1, 0.0, 0 } }),
             else => {},
         }
     }
