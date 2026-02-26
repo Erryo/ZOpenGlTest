@@ -132,6 +132,7 @@ const Renderer = struct {
         gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.program.?.ibo.?);
         gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(r.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(r.verts.?.items));
 
+        r.matrix = .identity();
         if (r.matrices != null and r.matrices.?.items.len > 0) {
             var idx: usize = r.matrices.?.items.len - 1;
             while (idx >= 0) {
@@ -145,7 +146,7 @@ const Renderer = struct {
 
         const flat: [*]const [16]f32 =
             @ptrCast(&r.matrix.data);
-        gl.UniformMatrix4fv(r.program.?.matrix_location.?, 1, gl.TRUE, flat);
+        gl.UniformMatrix4fv(r.program.?.matrix_location.?, 1, gl.FALSE, flat);
 
         gl.DrawElements(gl.TRIANGLES, @intCast(r.indices.?.items.len), gl.UNSIGNED_BYTE, 0);
     }
@@ -432,10 +433,12 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 
     var scaling: zm.Mat4f = zm.Mat4f.identity();
     scaling = .scaling(0.1, 0.1, 0.1);
-    const perspective: zm.Mat4f = .perspectiveLH(45.0, 16 / 9, 0.1, 10);
+    const perspective: zm.Mat4f = .perspectiveLH(std.math.degreesToRadians(45.0), 16.0 / 9.0, 0.1, 10);
+    const translation: zm.Mat4f = .translation(0, 0, 1.0);
 
-    try state.renderer.?.matrices.?.append(state.allocator, scaling);
     try state.renderer.?.matrices.?.append(state.allocator, perspective);
+    try state.renderer.?.matrices.?.append(state.allocator, scaling);
+    try state.renderer.?.matrices.?.append(state.allocator, translation);
 
     var quad: Object = try .gen_quad(state.allocator);
     try state.renderer.?.queue(&quad);
@@ -483,7 +486,7 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
     if (event.type == c.SDL_EVENT_WINDOW_RESIZED) {
         _ = c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h);
         const aspect: f32 = @as(f32, @floatFromInt(state.screen_w)) / @as(f32, @floatFromInt(state.screen_h));
-        const perspective: zm.Mat4f = .perspectiveLH(45.0, aspect, 0.1, 10);
+        const perspective: zm.Mat4f = .perspectiveLH(std.math.degreesToRadians(45.0), aspect, 0.1, 10);
         state.renderer.?.matrices.?.items[Perspective_Mat_idx] = perspective;
         sdl_log.debug(":window resized{d};{d}\n", .{ state.screen_w, state.screen_h });
     }
