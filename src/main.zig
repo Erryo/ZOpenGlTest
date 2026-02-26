@@ -164,9 +164,10 @@ const Program = struct {
     pub const Config = struct {
         vertex_src_path: []const u8,
         fragment_src_path: []const u8,
+        program: ?c_uint = null,
     };
 
-    pub fn init(allocator: Allocator, cfg: Config) !Program {
+    pub fn init_program_only(allocator: Allocator, cfg: Config) !Program {
         var program = Program{};
 
         const vertex_glsl_src = try read_in_shader(allocator, cfg.vertex_src_path);
@@ -174,6 +175,20 @@ const Program = struct {
         const fragment_glsl_src = try read_in_shader(allocator, cfg.fragment_src_path);
         defer allocator.free(fragment_glsl_src);
         program.program = try create_graphics_pipeline(vertex_glsl_src, fragment_glsl_src);
+    }
+
+    pub fn init(allocator: Allocator, cfg: Config) !Program {
+        var program = Program{};
+
+        if (cfg.program) |prg| {
+            program.program = prg;
+        } else {
+            const vertex_glsl_src = try read_in_shader(allocator, cfg.vertex_src_path);
+            defer allocator.free(vertex_glsl_src);
+            const fragment_glsl_src = try read_in_shader(allocator, cfg.fragment_src_path);
+            defer allocator.free(fragment_glsl_src);
+            program.program = try create_graphics_pipeline(vertex_glsl_src, fragment_glsl_src);
+        }
 
         program.vao = undefined;
         gl.GenVertexArrays(1, @ptrCast((&program.vao.?)));
@@ -236,6 +251,7 @@ const Program = struct {
         p.program = null;
     }
 };
+
 const Object = struct {
     verts: []Vertex,
     indices: []u8,
@@ -383,6 +399,7 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     state.renderer.?.matrix = .scaling(0.1, 0.1, 0.1);
     var quad: Object = try .gen_quad(state.allocator);
     try state.renderer.?.queue(&quad);
+    try state.renderer.?.queue(&quad);
 
     try state.renderer.?.flush();
     return c.SDL_APP_CONTINUE;
@@ -402,8 +419,20 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
 
     const obj: *Object = &(state.renderer.?.objects.?.items[0]);
+    var dir: f32 = 1.0;
+
     for (obj.verts) |*v| {
-        v.position.addAssign(.{ .data = .{ 0.1, -0.1, 0 } });
+        if (v.position.data[0] > 5.0) {
+            dir = -1.0;
+            v.position.addAssign(.{ .data = .{ 0.1 * dir * 100, 0, 0 } });
+            continue;
+        }
+        if (v.position.data[0] < -5.0) {
+            dir = 1.0;
+            v.position.addAssign(.{ .data = .{ 0.1 * dir * 100, 0, 0 } });
+            continue;
+        }
+        v.position.addAssign(.{ .data = .{ 0.1 * dir, 0, 0 } });
     }
 
     try pre_draw();
