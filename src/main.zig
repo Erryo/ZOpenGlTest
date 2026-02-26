@@ -273,6 +273,17 @@ const Object = struct {
         obj.index_start = null;
         return obj;
     }
+
+    pub fn move_to(obj: *Object, target: zm.Vec3f) void {
+        for (obj.verts) |*vert| {
+            vert.*.position = target;
+        }
+    }
+    pub fn move_by(obj: *Object, target: zm.Vec3f) void {
+        for (obj.verts) |*vert| {
+            vert.*.position.addAssign(target);
+        }
+    }
 };
 
 const Vertex = struct {
@@ -399,7 +410,6 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     state.renderer.?.matrix = .scaling(0.1, 0.1, 0.1);
     var quad: Object = try .gen_quad(state.allocator);
     try state.renderer.?.queue(&quad);
-    try state.renderer.?.queue(&quad);
 
     try state.renderer.?.flush();
     return c.SDL_APP_CONTINUE;
@@ -419,22 +429,10 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
 
     const obj: *Object = &(state.renderer.?.objects.?.items[0]);
-    var dir: f32 = 1.0;
 
-    for (obj.verts) |*v| {
-        if (v.position.data[0] > 5.0) {
-            dir = -1.0;
-            v.position.addAssign(.{ .data = .{ 0.1 * dir * 100, 0, 0 } });
-            continue;
-        }
-        if (v.position.data[0] < -5.0) {
-            dir = 1.0;
-            v.position.addAssign(.{ .data = .{ 0.1 * dir * 100, 0, 0 } });
-            continue;
-        }
-        v.position.addAssign(.{ .data = .{ 0.1 * dir, 0, 0 } });
+    for (obj.verts) |vert| {
+        gl_log.debug("verts:{any}\n", .{vert.position});
     }
-
     try pre_draw();
     if (state.renderer) |*renderer| {
         try renderer.update(obj);
@@ -461,7 +459,12 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
     }
 
     if (event.type == c.SDL_EVENT_KEY_DOWN) {
+        const obj: *Object = &(state.renderer.?.objects.?.items[0]);
         switch (event.key.scancode) {
+            c.SDL_SCANCODE_W => obj.move_by(.{ .data = .{ 0, 0.1, 0 } }),
+            c.SDL_SCANCODE_S => obj.move_by(.{ .data = .{ 0, -0.1, 0 } }),
+            c.SDL_SCANCODE_A => obj.move_by(.{ .data = .{ -0.1, 0.0, 0 } }),
+            c.SDL_SCANCODE_D => obj.move_by(.{ .data = .{ 0.1, 0.0, 0 } }),
             else => {},
         }
     }
