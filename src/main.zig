@@ -18,8 +18,9 @@ const target_triple: [:0]const u8 = x: {
 };
 
 const Allocator = std.mem.Allocator;
-const Saturation = 0.6;
-const Luminance = 0.5;
+
+const FAR = 100.0;
+const NEAR = 0.1;
 
 const Window_Width = 480;
 const Window_Height = 480;
@@ -30,12 +31,11 @@ const gl_log = std.log.scoped(.gl);
 const Vertex_Shader_Path = "shaders/vertex_shader.glsl";
 const Fragment_Shader_Path = "shaders/fragment_shader.glsl";
 
+const deg2rad = std.math.degreesToRadians;
 var Perspective_Mat_idx: usize = 0;
-var Scale_Mat_idx: usize = 1;
-var Rotating_Mat_idx: usize = 2;
 
 const VertexList = std.ArrayList(Vertex);
-const ObjectList = std.ArrayList(Drawable);
+const DrawableList = std.ArrayList(Drawable);
 const ByteList = std.ArrayList(u8);
 
 const State = struct {
@@ -56,14 +56,18 @@ const RenderError = error{
 
 const Renderer = struct {
     const self = @This();
-    objects: ?ObjectList = null,
+    drawables: ?DrawableList = null,
     verts: ?VertexList = null,
     indices: ?ByteList = null,
     program: ?Program = null,
 
+    camera_target: zm.Vec3f = .zero(),
+    camera_pos: zm.Vec3f = .{ .data = .{ 1, 0, 0 } },
+
     matrix: zm.Mat4f = .identity(),
-    rotation: zm.Vec3f = .zero(),
-    matrices: ?std.ArrayList(zm.Mat4f) = null,
+    projection: zm.Mat4f = .identity(),
+    scaling: zm.Mat4f = .identity(),
+    view: zm.Mat4f = .identity(),
 
     no_verts: u8 = 0,
     allocator: Allocator,
@@ -78,17 +82,14 @@ const Renderer = struct {
         var renderer: Renderer = .{
             .allocator = cfg.allocator,
         };
-        renderer.objects = try ObjectList.initCapacity(renderer.allocator, 2);
-        errdefer renderer.objects.?.deinit(renderer.allocator);
+        renderer.drawables = try DrawableList.initCapacity(renderer.allocator, 2);
+        errdefer renderer.drawables.?.deinit(renderer.allocator);
 
         renderer.verts = try VertexList.initCapacity(renderer.allocator, 6);
         errdefer renderer.verts.?.deinit(renderer.allocator);
 
         renderer.indices = try ByteList.initCapacity(renderer.allocator, 12);
         errdefer renderer.indices.?.deinit(renderer.allocator);
-
-        renderer.matrices = try std.ArrayList(zm.Mat4f).initCapacity(renderer.allocator, 2);
-        errdefer renderer.matrices.?.deinit(renderer.allocator);
 
         renderer.program = cfg.program;
 
@@ -102,7 +103,7 @@ const Renderer = struct {
             idx.* += r.no_verts;
         }
 
-        try r.objects.?.append(r.allocator, drw.*);
+        try r.drawables.?.append(r.allocator, drw.*);
         try r.indices.?.appendSlice(r.allocator, drw.indices);
         try r.verts.?.appendSlice(r.allocator, drw.verts);
     }
@@ -134,21 +135,14 @@ const Renderer = struct {
         gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.program.?.ibo.?);
         gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(r.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(r.verts.?.items));
 
-        r.matrix = .identity();
-        if (r.matrices != null and r.matrices.?.items.len > 0) {
-            var idx: usize = r.matrices.?.items.len - 1;
-            while (idx >= 0) {
-                r.matrix = r.matrix.multiply(r.matrices.?.items[idx]);
-                if (idx == 0)
-                    break
-                else
-                    idx -= 1;
-            }
-        }
+        r.matrix = r.matrix.multiply(r.projection);
+        r.matrix = r.matrix.multiply(r.view);
+        r.matrix = r.matrix.multiply(r.scaling);
 
         const flat: [*]const [16]f32 =
             @ptrCast(&r.matrix.data);
         gl.UniformMatrix4fv(r.program.?.matrix_location.?, 1, gl.TRUE, flat);
+        r.matrix = .identity();
 
         gl.DrawElements(gl.TRIANGLES, @intCast(r.indices.?.items.len), gl.UNSIGNED_BYTE, 0);
     }
@@ -160,18 +154,14 @@ const Renderer = struct {
         if (r.verts != null)
             r.verts.?.deinit(r.allocator);
 
-        if (r.matrices != null)
-            r.matrices.?.deinit(r.allocator);
-        r.matrices = null;
-
-        if (r.objects != null) {
-            for (r.objects.?.items) |drw| {
+        if (r.drawables != null) {
+            for (r.drawables.?.items) |drw| {
                 r.allocator.free(drw.verts);
                 r.allocator.free(drw.indices);
             }
-            r.objects.?.deinit(r.allocator);
+            r.drawables.?.deinit(r.allocator);
         }
-        r.objects = null;
+        r.drawables = null;
         r.verts = null;
         r.program = null;
         r.no_verts = 0;
@@ -277,10 +267,6 @@ const Program = struct {
     }
 };
 
-pub fn deg2rad(a: f32) f32 {
-    return a * 3.14159 / 180;
-}
-
 const Drawable = struct {
     verts: []Vertex,
     indices: []u8,
@@ -303,10 +289,50 @@ const Drawable = struct {
         return drw;
     }
 
+    pub fn gen_cube(allocator: Allocator) !Drawable {
+        var drw: Drawable = undefined;
+        const vertices = [_]Vertex{
+            Vertex{ .position = .{ .data = .{ -1, 1, 1 } }, .color = .{ .data = .{ 1, 0, 0 } } }, // V0
+            Vertex{ .position = .{ .data = .{ -1, -1, 1 } }, .color = .{ .data = .{ 1, 1, 0 } } }, // V1
+            Vertex{ .position = .{ .data = .{ 1, -1, 1 } }, .color = .{ .data = .{ 0, 1, 0 } } }, // V2
+            Vertex{ .position = .{ .data = .{ 1, 1, 1 } }, .color = .{ .data = .{ 0, 0, 1 } } }, // V3
+            //
+            Vertex{ .position = .{ .data = .{ -1, 1, -1 } }, .color = .{ .data = .{ 1, 0, 0 } } }, // V4
+            Vertex{ .position = .{ .data = .{ -1, -1, -1 } }, .color = .{ .data = .{ 1, 1, 0 } } }, // V5
+            Vertex{ .position = .{ .data = .{ 1, -1, -1 } }, .color = .{ .data = .{ 0, 1, 0 } } }, // V6
+            Vertex{ .position = .{ .data = .{ 1, 1, -1 } }, .color = .{ .data = .{ 0, 0, 1 } } }, // V7
+        };
+
+        const indices = [_]u8{
+            // Front Face
+            0, 1, 2,
+            0, 2, 3,
+            // Right Face
+            3, 2, 6,
+            3, 6, 7,
+            // Left Face
+            0, 1, 5,
+            0, 5, 4,
+            // Back Face
+            4, 5, 6,
+            4, 6, 7,
+            // Down Face
+            5, 1, 2,
+            5, 2, 6,
+            // Up Face
+            4, 0, 3,
+            4, 3, 7,
+        };
+
+        drw.verts = try allocator.dupe(Vertex, &vertices);
+        drw.indices = try allocator.dupe(u8, &indices);
+        drw.index_start = null;
+        return drw;
+    }
+
     pub fn rotate(drw: Drawable, rot: zm.Vec3f, allocator: Allocator) !Drawable {
         var new_obj: Drawable = .{ .index_start = null, .verts = undefined, .indices = undefined };
-        const rotation_mat: zm.Mat4f = .rotationLH(rot.norm(), deg2rad(rot.len()));
-        std.debug.print("rot.len{d}  {any}\n", .{ deg2rad(rot.len()), rot.norm() });
+        const rotation_mat: zm.Mat4f = .rotationRH(rot.norm(), deg2rad(rot.len()));
         new_obj.verts = try allocator.dupe(Vertex, drw.verts);
         new_obj.indices = try allocator.dupe(u8, drw.indices);
         for (new_obj.verts) |*v| {
@@ -315,6 +341,15 @@ const Drawable = struct {
             v.position = zm.Vec3f{ .data = .{ rotated.data[0], rotated.data[1], rotated.data[2] } };
         }
         return new_obj;
+    }
+
+    pub fn rotate_assign(drw: *Drawable, rot: zm.Vec3f) void {
+        const rotation_mat: zm.Mat4f = .rotationRH(rot.norm(), deg2rad(rot.len()));
+        for (drw.verts) |*v| {
+            const pos4 = zm.Vec4f{ .data = .{ v.position.data[0], v.position.data[1], v.position.data[2], 1.0 } };
+            const rotated = rotation_mat.multiplyVec(pos4);
+            v.position = zm.Vec3f{ .data = .{ rotated.data[0], rotated.data[1], rotated.data[2] } };
+        }
     }
 
     pub fn move_to(drw: *Drawable, target: zm.Vec3f) void {
@@ -451,25 +486,21 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 
     state.renderer = try Renderer.init(.{ .allocator = state.allocator, .program = program });
 
-    var scaling: zm.Mat4f = zm.Mat4f.identity();
-    scaling = .scaling(0.1, 0.1, 0.1);
-    const perspective: zm.Mat4f = .perspectiveLH(std.math.degreesToRadians(45.0), 16.0 / 9.0, 0.1, 10);
-    const rotating: zm.Mat4f = .rotationLH(.{ .data = .{ 1, 0, 0 } }, 0);
+    state.renderer.?.projection = .perspectiveRH(std.math.degreesToRadians(45.0), 16.0 / 9.0, NEAR, FAR);
+    state.renderer.?.scaling = .scale(state.renderer.?.scaling, 1);
+    state.renderer.?.view = .lookAtRH(state.renderer.?.camera_pos, state.renderer.?.camera_target, zm.Vec3f{ .data = .{ 0, 1, 0 } });
 
-    try state.renderer.?.matrices.?.append(state.allocator, perspective);
-    Perspective_Mat_idx = 0;
+    //   var quad: Drawable = try .gen_quad(state.allocator);
+    //   try state.renderer.?.queue(&quad);
 
-    try state.renderer.?.matrices.?.append(state.allocator, rotating);
-    Rotating_Mat_idx = 1;
+    //    var quad_side: Drawable = try .rotate(quad, .{ .data = .{ 0, 45, 0 } }, state.renderer.?.allocator);
+    //    try state.renderer.?.queue(&quad_side);
 
-    try state.renderer.?.matrices.?.append(state.allocator, scaling);
-    Scale_Mat_idx = 2;
-
-    var quad: Drawable = try .gen_quad(state.allocator);
-    try state.renderer.?.queue(&quad);
-
-    var quad_side: Drawable = try .rotate(quad, .{ .data = .{ 0, 90, 0 } }, state.renderer.?.allocator);
-    try state.renderer.?.queue(&quad_side);
+    var cube: Drawable = try .gen_cube(state.renderer.?.allocator);
+    try state.renderer.?.queue(&cube);
+    var cube_2: Drawable = try .gen_cube(state.renderer.?.allocator);
+    cube_2.move_by(.{ .data = .{ 2, 1, 1 } });
+    try state.renderer.?.queue(&cube_2);
 
     try state.renderer.?.flush();
     return c.SDL_APP_CONTINUE;
@@ -477,12 +508,12 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 
 fn pre_draw() !void {
     try check_gl_error();
-    gl.Disable(gl.DEPTH_TEST);
+    gl.Enable(gl.DEPTH_TEST);
     gl.Disable(gl.CULL_FACE);
     gl.Viewport(0, 0, state.screen_w, state.screen_h);
 
     gl.ClearColor(0.1, 0.1, 0.1, 1);
-    gl.Clear(gl.COLOR_BUFFER_BIT);
+    gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 }
 
 fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
@@ -490,9 +521,9 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
 
     try pre_draw();
     if (state.renderer) |*renderer| {
-        for (state.renderer.?.objects.?.items) |*drw| {
-            try renderer.update(drw);
-        }
+        //for (state.renderer.?.drawables.?.items) |*drw| {
+        //    try renderer.update(drw);
+        //}
         try renderer.draw();
     }
 
@@ -511,42 +542,40 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
     if (event.type == c.SDL_EVENT_WINDOW_RESIZED) {
         _ = c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h);
         const aspect: f32 = @as(f32, @floatFromInt(state.screen_w)) / @as(f32, @floatFromInt(state.screen_h));
-        const perspective: zm.Mat4f = .perspectiveLH(std.math.degreesToRadians(45.0), aspect, 0.1, 10);
-        state.renderer.?.matrices.?.items[Perspective_Mat_idx] = perspective;
+        const perspective: zm.Mat4f = .perspectiveRH(std.math.degreesToRadians(45.0), aspect, NEAR, FAR);
+        state.renderer.?.projection = perspective;
         sdl_log.debug(":window resized{d};{d}\n", .{ state.screen_w, state.screen_h });
     }
 
-    if (event.type == c.SDL_EVENT_KEY_DOWN) {
-        const drw: *Drawable = &(state.renderer.?.objects.?.items[0]);
-        switch (event.key.scancode) {
-            c.SDL_SCANCODE_W => drw.move_by(.{ .data = .{ 0, 0.1, 0 } }),
-            c.SDL_SCANCODE_S => drw.move_by(.{ .data = .{ 0, -0.1, 0 } }),
-            c.SDL_SCANCODE_A => drw.move_by(.{ .data = .{ -0.1, 0.0, 0 } }),
-            c.SDL_SCANCODE_D => drw.move_by(.{ .data = .{ 0.1, 0.0, 0 } }),
-            c.SDL_SCANCODE_UP => {
-                for (state.renderer.?.objects.?.items) |*object| {
-                    sdl_log.info("drw.start_idx{d}\n", .{drw.index_start.?});
-                    object.move_by(.{ .data = .{ 0.0, 0.0, 0.1 } });
-                }
-            },
-            c.SDL_SCANCODE_DOWN => {
-                for (state.renderer.?.objects.?.items) |*object| {
-                    sdl_log.info("drw.start_idx{d}\n", .{drw.index_start.?});
-                    object.move_by(.{ .data = .{ 0.0, 0.0, -0.1 } });
-                }
-            },
-            c.SDL_SCANCODE_LEFT => {
-                state.renderer.?.rotation.addAssign(.{ .data = .{ 10, 0, 0 } });
-                //state.renderer.?.matrices.?.items[Rotating_Mat_idx] = .rotationLH(.{ .data = .{ 0, 1, 0 } }, state.renderer.?.rotation.data[0]);
-            },
-            c.SDL_SCANCODE_RIGHT => {
-                state.renderer.?.rotation.addAssign(.{ .data = .{ -10, 0, 0 } });
-                //state.renderer.?.matrices.?.items[Rotating_Mat_idx] = .rotationLH(.{ .data = .{ 0, 1, 0 } }, state.renderer.?.rotation.data[0]);
-            },
-            else => {},
-        }
-    }
+    if (event.type == c.SDL_EVENT_KEY_DOWN or event.type == c.SDL_EVENT_KEY_UP) {
+        const keyboard = c.SDL_GetKeyboardState(null);
 
+        var delta: zm.Vec3f = .zero();
+        if (keyboard[c.SDL_SCANCODE_W]) {
+            delta.addAssign(.{ .data = .{ 0, 0.1, 0 } });
+        }
+        if (keyboard[c.SDL_SCANCODE_S]) {
+            delta.addAssign(.{ .data = .{ 0, -0.1, 0 } });
+        }
+        if (keyboard[c.SDL_SCANCODE_A]) {
+            delta.addAssign(.{ .data = .{ -0.1, 0, 0 } });
+        }
+        if (keyboard[c.SDL_SCANCODE_D]) {
+            delta.addAssign(.{ .data = .{ 0.1, 0, 0 } });
+        }
+        if (keyboard[c.SDL_SCANCODE_UP]) {
+            delta.addAssign(.{ .data = .{ 0, 0, -0.1 } });
+        }
+        if (keyboard[c.SDL_SCANCODE_DOWN]) {
+            delta.addAssign(.{ .data = .{ 0, 0, 0.1 } });
+        }
+        // if (keyboard[c.SDL_SCANCODE_LEFT]) {}
+        //if (keyboard[c.SDL_SCANCODE_RIGHT]) {}
+
+        state.renderer.?.camera_pos.addAssign(delta);
+        state.renderer.?.camera_target = state.renderer.?.camera_pos.add(.{ .data = .{ 0, 0, -1 } });
+        state.renderer.?.view = .lookAtRH(state.renderer.?.camera_pos, state.renderer.?.camera_target, zm.Vec3f{ .data = .{ 0, 1, 0 } });
+    }
     return c.SDL_APP_CONTINUE;
 }
 
