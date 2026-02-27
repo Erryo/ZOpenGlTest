@@ -30,11 +30,12 @@ const gl_log = std.log.scoped(.gl);
 const Vertex_Shader_Path = "shaders/vertex_shader.glsl";
 const Fragment_Shader_Path = "shaders/fragment_shader.glsl";
 
-const Perspective_Mat_idx = 0;
-const Scale_Mat_idx = 1;
+var Perspective_Mat_idx: usize = 0;
+var Scale_Mat_idx: usize = 1;
+var Rotating_Mat_idx: usize = 2;
 
 const VertexList = std.ArrayList(Vertex);
-const ObjectList = std.ArrayList(Object);
+const ObjectList = std.ArrayList(Drawable);
 const ByteList = std.ArrayList(u8);
 
 const State = struct {
@@ -61,6 +62,7 @@ const Renderer = struct {
     program: ?Program = null,
 
     matrix: zm.Mat4f = .identity(),
+    rotation: zm.Vec3f = .zero(),
     matrices: ?std.ArrayList(zm.Mat4f) = null,
 
     no_verts: u8 = 0,
@@ -92,17 +94,17 @@ const Renderer = struct {
 
         return renderer;
     }
-    pub fn queue(r: *self, obj: *Object) !void {
-        obj.index_start = r.no_verts;
-        defer r.no_verts += @intCast(obj.verts.len);
+    pub fn queue(r: *self, drw: *Drawable) !void {
+        drw.index_start = r.no_verts;
+        defer r.no_verts += @intCast(drw.verts.len);
 
-        for (obj.indices) |*idx| {
+        for (drw.indices) |*idx| {
             idx.* += r.no_verts;
         }
 
-        try r.objects.?.append(r.allocator, obj.*);
-        try r.indices.?.appendSlice(r.allocator, obj.indices);
-        try r.verts.?.appendSlice(r.allocator, obj.verts);
+        try r.objects.?.append(r.allocator, drw.*);
+        try r.indices.?.appendSlice(r.allocator, drw.indices);
+        try r.verts.?.appendSlice(r.allocator, drw.verts);
     }
     pub fn flush(r: *self) !void {
         if (r.flushed) return RenderError.AlreadyFlushed;
@@ -121,8 +123,8 @@ const Renderer = struct {
         defer r.flushed = true;
     }
 
-    pub fn update(r: *self, obj: *Object) !void {
-        r.verts.?.replaceRangeAssumeCapacity(obj.index_start.?, obj.verts.len, obj.verts);
+    pub fn update(r: *self, drw: *Drawable) !void {
+        r.verts.?.replaceRangeAssumeCapacity(drw.index_start.?, drw.verts.len, drw.verts);
     }
     pub fn draw(r: *self) !void {
         try check_gl_error();
@@ -146,7 +148,7 @@ const Renderer = struct {
 
         const flat: [*]const [16]f32 =
             @ptrCast(&r.matrix.data);
-        gl.UniformMatrix4fv(r.program.?.matrix_location.?, 1, gl.FALSE, flat);
+        gl.UniformMatrix4fv(r.program.?.matrix_location.?, 1, gl.TRUE, flat);
 
         gl.DrawElements(gl.TRIANGLES, @intCast(r.indices.?.items.len), gl.UNSIGNED_BYTE, 0);
     }
@@ -163,9 +165,9 @@ const Renderer = struct {
         r.matrices = null;
 
         if (r.objects != null) {
-            for (r.objects.?.items) |obj| {
-                r.allocator.free(obj.verts);
-                r.allocator.free(obj.indices);
+            for (r.objects.?.items) |drw| {
+                r.allocator.free(drw.verts);
+                r.allocator.free(drw.indices);
             }
             r.objects.?.deinit(r.allocator);
         }
@@ -275,35 +277,53 @@ const Program = struct {
     }
 };
 
-const Object = struct {
+pub fn deg2rad(a: f32) f32 {
+    return a * 3.14159 / 180;
+}
+
+const Drawable = struct {
     verts: []Vertex,
     indices: []u8,
     index_start: ?usize,
 
-    pub fn gen_quad(allocator: Allocator) !Object {
-        var obj: Object = undefined;
+    pub fn gen_quad(allocator: Allocator) !Drawable {
+        var drw: Drawable = undefined;
         const vertices = [_]Vertex{
-            Vertex{ .position = .{ .data = .{ -1, 1, 0 } }, .color = .{ .data = .{ 1, 0, 0 } } },
-            Vertex{ .position = .{ .data = .{ -1, -1, 0 } }, .color = .{ .data = .{ 1, 1, 0 } } },
-            Vertex{ .position = .{ .data = .{ 1, -1, 0 } }, .color = .{ .data = .{ 0, 1, 0 } } },
-            Vertex{ .position = .{ .data = .{ 1, 1, 0 } }, .color = .{ .data = .{ 0, 0, 1 } } },
+            Vertex{ .position = .{ .data = .{ -1, 1, 1 } }, .color = .{ .data = .{ 1, 0, 0 } } },
+            Vertex{ .position = .{ .data = .{ -1, -1, 1 } }, .color = .{ .data = .{ 1, 1, 0 } } },
+            Vertex{ .position = .{ .data = .{ 1, -1, 1 } }, .color = .{ .data = .{ 0, 1, 0 } } },
+            Vertex{ .position = .{ .data = .{ 1, 1, 1 } }, .color = .{ .data = .{ 0, 0, 1 } } },
         };
 
         const indices = [_]u8{ 0, 1, 2, 0, 2, 3 };
 
-        obj.verts = try allocator.dupe(Vertex, &vertices);
-        obj.indices = try allocator.dupe(u8, &indices);
-        obj.index_start = null;
-        return obj;
+        drw.verts = try allocator.dupe(Vertex, &vertices);
+        drw.indices = try allocator.dupe(u8, &indices);
+        drw.index_start = null;
+        return drw;
     }
 
-    pub fn move_to(obj: *Object, target: zm.Vec3f) void {
-        for (obj.verts) |*vert| {
+    pub fn rotate(drw: Drawable, rot: zm.Vec3f, allocator: Allocator) !Drawable {
+        var new_obj: Drawable = .{ .index_start = null, .verts = undefined, .indices = undefined };
+        const rotation_mat: zm.Mat4f = .rotationLH(rot.norm(), deg2rad(rot.len()));
+        std.debug.print("rot.len{d}  {any}\n", .{ deg2rad(rot.len()), rot.norm() });
+        new_obj.verts = try allocator.dupe(Vertex, drw.verts);
+        new_obj.indices = try allocator.dupe(u8, drw.indices);
+        for (new_obj.verts) |*v| {
+            const pos4 = zm.Vec4f{ .data = .{ v.position.data[0], v.position.data[1], v.position.data[2], 1.0 } };
+            const rotated = rotation_mat.multiplyVec(pos4);
+            v.position = zm.Vec3f{ .data = .{ rotated.data[0], rotated.data[1], rotated.data[2] } };
+        }
+        return new_obj;
+    }
+
+    pub fn move_to(drw: *Drawable, target: zm.Vec3f) void {
+        for (drw.verts) |*vert| {
             vert.*.position = target;
         }
     }
-    pub fn move_by(obj: *Object, target: zm.Vec3f) void {
-        for (obj.verts) |*vert| {
+    pub fn move_by(drw: *Drawable, target: zm.Vec3f) void {
+        for (drw.verts) |*vert| {
             vert.*.position.addAssign(target);
         }
     }
@@ -434,14 +454,22 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     var scaling: zm.Mat4f = zm.Mat4f.identity();
     scaling = .scaling(0.1, 0.1, 0.1);
     const perspective: zm.Mat4f = .perspectiveLH(std.math.degreesToRadians(45.0), 16.0 / 9.0, 0.1, 10);
-    const translation: zm.Mat4f = .translation(0, 0, 1.0);
+    const rotating: zm.Mat4f = .rotationLH(.{ .data = .{ 1, 0, 0 } }, 0);
 
     try state.renderer.?.matrices.?.append(state.allocator, perspective);
-    try state.renderer.?.matrices.?.append(state.allocator, scaling);
-    try state.renderer.?.matrices.?.append(state.allocator, translation);
+    Perspective_Mat_idx = 0;
 
-    var quad: Object = try .gen_quad(state.allocator);
+    try state.renderer.?.matrices.?.append(state.allocator, rotating);
+    Rotating_Mat_idx = 1;
+
+    try state.renderer.?.matrices.?.append(state.allocator, scaling);
+    Scale_Mat_idx = 2;
+
+    var quad: Drawable = try .gen_quad(state.allocator);
     try state.renderer.?.queue(&quad);
+
+    var quad_side: Drawable = try .rotate(quad, .{ .data = .{ 0, 0, 90 } }, state.renderer.?.allocator);
+    try state.renderer.?.queue(&quad_side);
 
     try state.renderer.?.flush();
     return c.SDL_APP_CONTINUE;
@@ -460,14 +488,11 @@ fn pre_draw() !void {
 fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
 
-    const obj: *Object = &(state.renderer.?.objects.?.items[0]);
-
-    for (obj.verts) |vert| {
-        gl_log.debug("verts:{any}\n", .{vert.position});
-    }
     try pre_draw();
     if (state.renderer) |*renderer| {
-        try renderer.update(obj);
+        for (state.renderer.?.objects.?.items) |*drw| {
+            try renderer.update(drw);
+        }
         try renderer.draw();
     }
 
@@ -492,12 +517,32 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
     }
 
     if (event.type == c.SDL_EVENT_KEY_DOWN) {
-        const obj: *Object = &(state.renderer.?.objects.?.items[0]);
+        const drw: *Drawable = &(state.renderer.?.objects.?.items[0]);
         switch (event.key.scancode) {
-            c.SDL_SCANCODE_W => obj.move_by(.{ .data = .{ 0, 0.1, 0 } }),
-            c.SDL_SCANCODE_S => obj.move_by(.{ .data = .{ 0, -0.1, 0 } }),
-            c.SDL_SCANCODE_A => obj.move_by(.{ .data = .{ -0.1, 0.0, 0 } }),
-            c.SDL_SCANCODE_D => obj.move_by(.{ .data = .{ 0.1, 0.0, 0 } }),
+            c.SDL_SCANCODE_W => drw.move_by(.{ .data = .{ 0, 0.1, 0 } }),
+            c.SDL_SCANCODE_S => drw.move_by(.{ .data = .{ 0, -0.1, 0 } }),
+            c.SDL_SCANCODE_A => drw.move_by(.{ .data = .{ -0.1, 0.0, 0 } }),
+            c.SDL_SCANCODE_D => drw.move_by(.{ .data = .{ 0.1, 0.0, 0 } }),
+            c.SDL_SCANCODE_UP => {
+                for (state.renderer.?.objects.?.items) |*object| {
+                    sdl_log.info("drw.start_idx{d}\n", .{drw.index_start.?});
+                    object.move_by(.{ .data = .{ 0.0, 0.0, 0.1 } });
+                }
+            },
+            c.SDL_SCANCODE_DOWN => {
+                for (state.renderer.?.objects.?.items) |*object| {
+                    sdl_log.info("drw.start_idx{d}\n", .{drw.index_start.?});
+                    object.move_by(.{ .data = .{ 0.0, 0.0, -0.1 } });
+                }
+            },
+            c.SDL_SCANCODE_LEFT => {
+                state.renderer.?.rotation.addAssign(.{ .data = .{ 10, 0, 0 } });
+                //state.renderer.?.matrices.?.items[Rotating_Mat_idx] = .rotationLH(.{ .data = .{ 0, 1, 0 } }, state.renderer.?.rotation.data[0]);
+            },
+            c.SDL_SCANCODE_RIGHT => {
+                state.renderer.?.rotation.addAssign(.{ .data = .{ -10, 0, 0 } });
+                //state.renderer.?.matrices.?.items[Rotating_Mat_idx] = .rotationLH(.{ .data = .{ 0, 1, 0 } }, state.renderer.?.rotation.data[0]);
+            },
             else => {},
         }
     }
