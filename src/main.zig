@@ -468,7 +468,7 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     var quad: Drawable = try .gen_quad(state.allocator);
     try state.renderer.?.queue(&quad);
 
-    var quad_side: Drawable = try .rotate(quad, .{ .data = .{ 0, 0, 90 } }, state.renderer.?.allocator);
+    var quad_side: Drawable = try .rotate(quad, .{ .data = .{ 0, 90, 0 } }, state.renderer.?.allocator);
     try state.renderer.?.queue(&quad_side);
 
     try state.renderer.?.flush();
