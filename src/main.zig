@@ -24,6 +24,7 @@ const NEAR = 0.1;
 
 const Window_Width = 480;
 const Window_Height = 480;
+const Mouse_Sens: comptime_float = 100.0;
 
 const sdl_log = std.log.scoped(.sdl);
 const gl_log = std.log.scoped(.gl);
@@ -42,6 +43,9 @@ const State = struct {
     window: ?*c.SDL_Window,
     screen_w: c_int,
     screen_h: c_int,
+
+    mouse_x: f32,
+    mouse_y: f32,
 
     allocator: std.mem.Allocator,
     renderer: ?Renderer,
@@ -375,6 +379,8 @@ var state: State = .{
     .window = null,
     .screen_w = Window_Width,
     .screen_h = Window_Height,
+    .mouse_y = @floatFromInt(Window_Height / 2),
+    .mouse_x = @floatFromInt(Window_Width / 2),
     .gl_ctx = null,
     .gl_procs = null,
 };
@@ -503,6 +509,8 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     try state.renderer.?.queue(&cube_2);
 
     try state.renderer.?.flush();
+    try errify(c.SDL_SetWindowMouseGrab(state.window, true));
+    try errify(c.SDL_SetWindowRelativeMouseMode(state.window, true));
     return c.SDL_APP_CONTINUE;
 }
 
@@ -544,7 +552,20 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
         const aspect: f32 = @as(f32, @floatFromInt(state.screen_w)) / @as(f32, @floatFromInt(state.screen_h));
         const perspective: zm.Mat4f = .perspectiveRH(std.math.degreesToRadians(45.0), aspect, NEAR, FAR);
         state.renderer.?.projection = perspective;
+        _ = c.SDL_GetMouseState(&state.mouse_x, &state.mouse_y);
         sdl_log.debug(":window resized{d};{d}\n", .{ state.screen_w, state.screen_h });
+    }
+    if (event.type == c.SDL_EVENT_MOUSE_MOTION) {
+        var m_x: f32 = undefined;
+        var m_y: f32 = undefined;
+        _ = c.SDL_GetMouseState(&m_x, &m_y);
+        defer state.mouse_x = m_x;
+        defer state.mouse_y = m_y;
+
+        const d_x: f32 = (m_x) / Mouse_Sens;
+        const d_y: f32 = -(m_y) / Mouse_Sens;
+        state.renderer.?.camera_target.addAssign(.{ .data = .{ d_x, d_y, 0 } });
+        state.renderer.?.view = .lookAtRH(state.renderer.?.camera_pos, state.renderer.?.camera_target, zm.Vec3f{ .data = .{ 0, 1, 0 } });
     }
 
     if (event.type == c.SDL_EVENT_KEY_DOWN or event.type == c.SDL_EVENT_KEY_UP) {
@@ -616,6 +637,8 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
         .window = null,
         .screen_w = Window_Width,
         .screen_h = Window_Height,
+        .mouse_y = @floatFromInt(Window_Height / 2),
+        .mouse_x = @floatFromInt(Window_Width / 2),
         .gl_ctx = null,
         .gl_procs = null,
         .allocator = state.allocator,
