@@ -267,12 +267,14 @@ const Program = struct {
 const Camera = struct {
     from: zm.Vec3f = .zero(),
     to: zm.Vec3f = .zero(),
+    forward: zm.Vec3f = .zero(),
+    side: zm.Vec3f = .zero(),
+    up: zm.Vec3f = .{ .data = .{ 0, 1, 0 } },
     // pitch, yaw, roll
     rotation: zm.Vec3f = .zero(),
     view: zm.Mat4f = .identity(),
 
     pub fn update(cam: *Camera, dx_px: f32, dy_px: f32) void {
-        cam.to = .zero();
         // should be inverted (dy,dx,0)
         const delta_rot: zm.Vec3f = .{ .data = .{ Camera.px2deg(-dy_px), Camera.px2deg(-dx_px), 0 } };
         cam.rotation.addAssign(delta_rot);
@@ -282,21 +284,33 @@ const Camera = struct {
         const pitch_dy = @cos(cam.rotation.data[0]);
         const pitch_dz = @sin(cam.rotation.data[0]);
 
-        cam.to.addAssign(.{ .data = .{ 0, pitch_dy, pitch_dz } });
-
         // Calculate yaw: affects X & Z;
         // x => sin, z => cos
         const yaw_dx = @sin(cam.rotation.data[1]);
         const yaw_dz = @cos(cam.rotation.data[1]);
 
-        cam.to.addAssign(.{ .data = .{ yaw_dx, 0, yaw_dz } });
+        // Calculate real target position
+        const to: zm.Vec3f = .{ .data = .{ yaw_dx, pitch_dy, pitch_dz + yaw_dz } };
+        const real_target: zm.Vec3f = cam.from.add(to).add(.{ .data = .{ 0, 0, 0 } });
 
-        const real_target: zm.Vec3f = cam.from.add(cam.to).add(.{ .data = .{ 0, 0, 0 } });
-        const up: zm.Vec3f = .{ .data = .{ 0, 1.0, 0 } };
-        std.debug.print("len cam_from:{any}\n", .{cam.from.len()});
-        std.debug.print("len real_target:{any}\n", .{real_target.len()});
-        std.debug.print("len up:{any}\n", .{up.len()});
-        cam.view = .lookAtRH(cam.from, real_target, up);
+        cam.view = .lookAtRH(cam.from, real_target, cam.up);
+
+        cam.to = real_target;
+        cam.forward = real_target.sub(cam.from).norm();
+        cam.side = cam.forward.crossRH(cam.up).norm();
+    }
+    pub fn move(cam: *Camera, deltas: zm.Vec3f) void {
+        var delta_pos: zm.Vec3f = .zero();
+        delta_pos.addAssign(cam.forward.scale(deltas.data[2]));
+        delta_pos.addAssign(cam.up.scale(deltas.data[1]));
+        delta_pos.addAssign(cam.side.scale(deltas.data[0]));
+
+        std.debug.print("delta_pos:{any}\n", .{delta_pos});
+        std.debug.print("forward:{any}\n", .{cam.forward});
+        std.debug.print("side:{any}\n", .{cam.side});
+        std.debug.print("up:{any}\n", .{cam.up});
+        cam.from.addAssign(delta_pos);
+        cam.update(0, 0);
     }
 
     pub fn px2deg(delta: f32) f32 {
@@ -607,10 +621,10 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
 
         var delta: zm.Vec3f = .zero();
         if (keyboard[c.SDL_SCANCODE_W]) {
-            delta.addAssign(.{ .data = .{ 0, 0.1, 0 } });
+            delta.addAssign(.{ .data = .{ 0, 0.1, 0.1 } });
         }
         if (keyboard[c.SDL_SCANCODE_S]) {
-            delta.addAssign(.{ .data = .{ 0, -0.1, 0 } });
+            delta.addAssign(.{ .data = .{ 0, 0, -0.1 } });
         }
         if (keyboard[c.SDL_SCANCODE_A]) {
             delta.addAssign(.{ .data = .{ -0.1, 0, 0 } });
@@ -619,16 +633,16 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
             delta.addAssign(.{ .data = .{ 0.1, 0, 0 } });
         }
         if (keyboard[c.SDL_SCANCODE_UP]) {
-            delta.addAssign(.{ .data = .{ 0, 0, -0.1 } });
+            delta.addAssign(.{ .data = .{ 0, 0.1, 0 } });
         }
         if (keyboard[c.SDL_SCANCODE_DOWN]) {
-            delta.addAssign(.{ .data = .{ 0, 0, 0.1 } });
+            delta.addAssign(.{ .data = .{ 0, -0.1, 0 } });
         }
         // if (keyboard[c.SDL_SCANCODE_LEFT]) {}
         //if (keyboard[c.SDL_SCANCODE_RIGHT]) {}
 
-        state.renderer.?.cam.from.addAssign(delta);
-        state.renderer.?.cam.update(0, 0);
+        state.renderer.?.cam.move(delta);
+        std.debug.print("position:{any}\n", .{state.renderer.?.cam.from});
     }
     return c.SDL_APP_CONTINUE;
 }
