@@ -276,22 +276,30 @@ const Camera = struct {
 
     pub fn update(cam: *Camera, dx_px: f32, dy_px: f32) void {
         // should be inverted (dy,dx,0)
-        const delta_rot: zm.Vec3f = .{ .data = .{ Camera.px2deg(-dy_px), Camera.px2deg(-dx_px), 0 } };
+        const delta_rot: zm.Vec3f = .{ .data = .{ Camera.px2deg(-dy_px), Camera.px2deg(dx_px), 0 } };
         cam.rotation.addAssign(delta_rot);
 
-        // Calculate pitch: affects Y & Z;
-        // y => cos, z => sin
-        const pitch_dy = @cos(cam.rotation.data[0]);
-        const pitch_dz = @sin(cam.rotation.data[0]);
+        const pitch_limit = std.math.pi / 2.0 - 0.01;
+        cam.rotation.data[0] = std.math.clamp(cam.rotation.data[0], -pitch_limit, pitch_limit);
 
-        // Calculate yaw: affects X & Z;
-        // x => sin, z => cos
-        const yaw_dx = @sin(cam.rotation.data[1]);
-        const yaw_dz = @cos(cam.rotation.data[1]);
+        const pitch = cam.rotation.data[0];
+        const yaw = cam.rotation.data[1];
+
+        const cos_pitch = @cos(pitch);
+        const sin_pitch = @sin(pitch);
+        const cos_yaw = @cos(yaw);
+        const sin_yaw = @sin(yaw);
+
+        const forward: zm.Vec3f = .{
+            .data = .{
+                cos_pitch * sin_yaw, // X: strafe component
+                sin_pitch, // Y: up/down component
+                -cos_pitch * cos_yaw, // Z: negative because OpenGL looks down -Z
+            },
+        };
 
         // Calculate real target position
-        const to: zm.Vec3f = .{ .data = .{ yaw_dx, pitch_dy, pitch_dz + yaw_dz } };
-        const real_target: zm.Vec3f = cam.from.add(to).add(.{ .data = .{ 0, 0, 0 } });
+        const real_target: zm.Vec3f = cam.from.add(forward);
 
         cam.view = .lookAtRH(cam.from, real_target, cam.up);
 
@@ -305,10 +313,6 @@ const Camera = struct {
         delta_pos.addAssign(cam.up.scale(deltas.data[1]));
         delta_pos.addAssign(cam.side.scale(deltas.data[0]));
 
-        std.debug.print("delta_pos:{any}\n", .{delta_pos});
-        std.debug.print("forward:{any}\n", .{cam.forward});
-        std.debug.print("side:{any}\n", .{cam.side});
-        std.debug.print("up:{any}\n", .{cam.up});
         cam.from.addAssign(delta_pos);
         cam.update(0, 0);
     }
@@ -554,7 +558,6 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     try state.renderer.?.queue(&cube_2);
 
     try state.renderer.?.flush();
-    try errify(c.SDL_SetWindowMouseGrab(state.window, true));
     try errify(c.SDL_SetWindowRelativeMouseMode(state.window, true));
     return c.SDL_APP_CONTINUE;
 }
@@ -597,10 +600,6 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
         _ = c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h);
         const aspect: f32 = @as(f32, @floatFromInt(state.screen_w)) / @as(f32, @floatFromInt(state.screen_h));
         const perspective: zm.Mat4f = .perspectiveRH(std.math.degreesToRadians(45.0), aspect, NEAR, FAR);
-        const mid_x: c_int = state.screen_w;
-        const mid_y: c_int = state.screen_h;
-        const rect: c.SDL_Rect = .{ .h = 1, .y = mid_y, .w = 1, .x = mid_x };
-        try errify(c.SDL_SetWindowMouseRect(state.window, &rect));
         state.renderer.?.projection = perspective;
         sdl_log.debug(":window resized{d};{d}\n", .{ state.screen_w, state.screen_h });
     }
@@ -608,7 +607,6 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
     if (event.type == c.SDL_EVENT_MOUSE_MOTION) {
         var m_x: f32 = undefined;
         var m_y: f32 = undefined;
-        //_ = c.SDL_GetMouseState(&m_x, &m_y);
         _ = c.SDL_GetRelativeMouseState(&m_x, &m_y);
 
         state.renderer.?.cam.update(m_x, m_y);
@@ -621,7 +619,7 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
 
         var delta: zm.Vec3f = .zero();
         if (keyboard[c.SDL_SCANCODE_W]) {
-            delta.addAssign(.{ .data = .{ 0, 0.1, 0.1 } });
+            delta.addAssign(.{ .data = .{ 0, 0, 0.1 } });
         }
         if (keyboard[c.SDL_SCANCODE_S]) {
             delta.addAssign(.{ .data = .{ 0, 0, -0.1 } });
