@@ -24,7 +24,6 @@ const NEAR = 0.1;
 
 const Window_Width = 480;
 const Window_Height = 480;
-const Mouse_Sens: comptime_float = 100.0;
 
 const sdl_log = std.log.scoped(.sdl);
 const gl_log = std.log.scoped(.gl);
@@ -44,9 +43,6 @@ const State = struct {
     screen_w: c_int,
     screen_h: c_int,
 
-    mouse_x: f32,
-    mouse_y: f32,
-
     allocator: std.mem.Allocator,
     renderer: ?Renderer,
 
@@ -65,13 +61,10 @@ const Renderer = struct {
     indices: ?ByteList = null,
     program: ?Program = null,
 
-    camera_target: zm.Vec3f = .zero(),
-    camera_pos: zm.Vec3f = .{ .data = .{ 1, 0, 0 } },
-
+    cam: Camera = .{},
     matrix: zm.Mat4f = .identity(),
     projection: zm.Mat4f = .identity(),
     scaling: zm.Mat4f = .identity(),
-    view: zm.Mat4f = .identity(),
 
     no_verts: u8 = 0,
     allocator: Allocator,
@@ -140,7 +133,7 @@ const Renderer = struct {
         gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(r.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(r.verts.?.items));
 
         r.matrix = r.matrix.multiply(r.projection);
-        r.matrix = r.matrix.multiply(r.view);
+        r.matrix = r.matrix.multiply(r.cam.view);
         r.matrix = r.matrix.multiply(r.scaling);
 
         const flat: [*]const [16]f32 =
@@ -271,6 +264,46 @@ const Program = struct {
     }
 };
 
+const Camera = struct {
+    from: zm.Vec3f = .zero(),
+    to: zm.Vec3f = .zero(),
+    // pitch, yaw, roll
+    rotation: zm.Vec3f = .zero(),
+    view: zm.Mat4f = .identity(),
+
+    pub fn update(cam: *Camera, dx_px: f32, dy_px: f32) void {
+        cam.to = .zero();
+        // should be inverted (dy,dx,0)
+        const delta_rot: zm.Vec3f = .{ .data = .{ Camera.px2deg(-dy_px), Camera.px2deg(-dx_px), 0 } };
+        cam.rotation.addAssign(delta_rot);
+
+        // Calculate pitch: affects Y & Z;
+        // y => cos, z => sin
+        const pitch_dy = @cos(cam.rotation.data[0]);
+        const pitch_dz = @sin(cam.rotation.data[0]);
+
+        cam.to.addAssign(.{ .data = .{ 0, pitch_dy, pitch_dz } });
+
+        // Calculate yaw: affects X & Z;
+        // x => sin, z => cos
+        const yaw_dx = @sin(cam.rotation.data[1]);
+        const yaw_dz = @cos(cam.rotation.data[1]);
+
+        cam.to.addAssign(.{ .data = .{ yaw_dx, 0, yaw_dz } });
+
+        const real_target: zm.Vec3f = cam.from.add(cam.to).add(.{ .data = .{ 0, 0, 0 } });
+        const up: zm.Vec3f = .{ .data = .{ 0, 1.0, 0 } };
+        std.debug.print("len cam_from:{any}\n", .{cam.from.len()});
+        std.debug.print("len real_target:{any}\n", .{real_target.len()});
+        std.debug.print("len up:{any}\n", .{up.len()});
+        cam.view = .lookAtRH(cam.from, real_target, up);
+    }
+
+    pub fn px2deg(delta: f32) f32 {
+        return delta * 0.005;
+    }
+};
+
 const Drawable = struct {
     verts: []Vertex,
     indices: []u8,
@@ -379,8 +412,6 @@ var state: State = .{
     .window = null,
     .screen_w = Window_Width,
     .screen_h = Window_Height,
-    .mouse_y = @floatFromInt(Window_Height / 2),
-    .mouse_x = @floatFromInt(Window_Width / 2),
     .gl_ctx = null,
     .gl_procs = null,
 };
@@ -494,7 +525,7 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 
     state.renderer.?.projection = .perspectiveRH(std.math.degreesToRadians(45.0), 16.0 / 9.0, NEAR, FAR);
     state.renderer.?.scaling = .scale(state.renderer.?.scaling, 1);
-    state.renderer.?.view = .lookAtRH(state.renderer.?.camera_pos, state.renderer.?.camera_target, zm.Vec3f{ .data = .{ 0, 1, 0 } });
+    state.renderer.?.cam.update(0, 0);
 
     //   var quad: Drawable = try .gen_quad(state.allocator);
     //   try state.renderer.?.queue(&quad);
@@ -505,7 +536,7 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     var cube: Drawable = try .gen_cube(state.renderer.?.allocator);
     try state.renderer.?.queue(&cube);
     var cube_2: Drawable = try .gen_cube(state.renderer.?.allocator);
-    cube_2.move_by(.{ .data = .{ 2, 1, 1 } });
+    cube_2.move_by(.{ .data = .{ 2, 2, 1 } });
     try state.renderer.?.queue(&cube_2);
 
     try state.renderer.?.flush();
@@ -529,9 +560,9 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
 
     try pre_draw();
     if (state.renderer) |*renderer| {
-        //for (state.renderer.?.drawables.?.items) |*drw| {
-        //    try renderer.update(drw);
-        //}
+        for (state.renderer.?.drawables.?.items) |*drw| {
+            try renderer.update(drw);
+        }
         try renderer.draw();
     }
 
@@ -541,6 +572,7 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
 }
 
 fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
+    std.debug.print("clearing...\x1b[2J \n", .{});
     _ = appstate;
 
     if (event.type == c.SDL_EVENT_QUIT) {
@@ -551,21 +583,23 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
         _ = c.SDL_GetWindowSize(state.window, &state.screen_w, &state.screen_h);
         const aspect: f32 = @as(f32, @floatFromInt(state.screen_w)) / @as(f32, @floatFromInt(state.screen_h));
         const perspective: zm.Mat4f = .perspectiveRH(std.math.degreesToRadians(45.0), aspect, NEAR, FAR);
+        const mid_x: c_int = state.screen_w;
+        const mid_y: c_int = state.screen_h;
+        const rect: c.SDL_Rect = .{ .h = 1, .y = mid_y, .w = 1, .x = mid_x };
+        try errify(c.SDL_SetWindowMouseRect(state.window, &rect));
         state.renderer.?.projection = perspective;
-        _ = c.SDL_GetMouseState(&state.mouse_x, &state.mouse_y);
         sdl_log.debug(":window resized{d};{d}\n", .{ state.screen_w, state.screen_h });
     }
+
     if (event.type == c.SDL_EVENT_MOUSE_MOTION) {
         var m_x: f32 = undefined;
         var m_y: f32 = undefined;
-        _ = c.SDL_GetMouseState(&m_x, &m_y);
-        defer state.mouse_x = m_x;
-        defer state.mouse_y = m_y;
+        //_ = c.SDL_GetMouseState(&m_x, &m_y);
+        _ = c.SDL_GetRelativeMouseState(&m_x, &m_y);
 
-        const d_x: f32 = (m_x) / Mouse_Sens;
-        const d_y: f32 = -(m_y) / Mouse_Sens;
-        state.renderer.?.camera_target.addAssign(.{ .data = .{ d_x, d_y, 0 } });
-        state.renderer.?.view = .lookAtRH(state.renderer.?.camera_pos, state.renderer.?.camera_target, zm.Vec3f{ .data = .{ 0, 1, 0 } });
+        state.renderer.?.cam.update(m_x, m_y);
+        std.debug.print("rotation:{any}\n", .{state.renderer.?.cam.rotation});
+        std.debug.print("cam.to:{any}\n", .{state.renderer.?.cam.to});
     }
 
     if (event.type == c.SDL_EVENT_KEY_DOWN or event.type == c.SDL_EVENT_KEY_UP) {
@@ -593,9 +627,8 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
         // if (keyboard[c.SDL_SCANCODE_LEFT]) {}
         //if (keyboard[c.SDL_SCANCODE_RIGHT]) {}
 
-        state.renderer.?.camera_pos.addAssign(delta);
-        state.renderer.?.camera_target = state.renderer.?.camera_pos.add(.{ .data = .{ 0, 0, -1 } });
-        state.renderer.?.view = .lookAtRH(state.renderer.?.camera_pos, state.renderer.?.camera_target, zm.Vec3f{ .data = .{ 0, 1, 0 } });
+        state.renderer.?.cam.from.addAssign(delta);
+        state.renderer.?.cam.update(0, 0);
     }
     return c.SDL_APP_CONTINUE;
 }
@@ -637,8 +670,6 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
         .window = null,
         .screen_w = Window_Width,
         .screen_h = Window_Height,
-        .mouse_y = @floatFromInt(Window_Height / 2),
-        .mouse_x = @floatFromInt(Window_Width / 2),
         .gl_ctx = null,
         .gl_procs = null,
         .allocator = state.allocator,
