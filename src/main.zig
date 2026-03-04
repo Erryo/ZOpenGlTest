@@ -497,7 +497,6 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     const allocator = gpa.allocator();
 
     appstate.* = try State.init(.{ .screen_w = Window_Width, .screen_h = Window_Height, .allocator = allocator });
-    std.debug.print("before cptr\n", .{});
     const state: *State = cptr(*State, appstate.*.?);
 
     std.log.debug("{s} {s}", .{ target_triple, @tagName(builtin.mode) });
@@ -691,15 +690,9 @@ fn sdlAppQuit(state: *State, result: anyerror!c.SDL_AppResult) void {
     if (state.window != null)
         c.SDL_DestroyWindow(state.window.?);
 
-    if (state.window != null)
-        c.SDL_DestroyWindow(state.window.?);
     c.SDL_Quit();
 
-    state.allocator.free(state);
-
-    if (gpa.deinit() == .leak) {
-        @panic("GeneralPurposeAllocator leaked");
-    }
+    state.allocator.destroy(state);
 }
 
 fn read_in_shader(alloc: Allocator, shader_path: []const u8) ![]u8 {
