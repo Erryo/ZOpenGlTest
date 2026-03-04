@@ -31,6 +31,8 @@ const gl_log = std.log.scoped(.gl);
 const Vertex_Shader_Path = "shaders/vertex_shader.glsl";
 const Fragment_Shader_Path = "shaders/fragment_shader.glsl";
 
+var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
+
 const deg2rad = std.math.degreesToRadians;
 var Perspective_Mat_idx: usize = 0;
 
@@ -48,6 +50,26 @@ const State = struct {
 
     gl_ctx: c.SDL_GLContext,
     gl_procs: ?gl.ProcTable,
+
+    const Config = struct {
+        screen_w: c_int,
+        screen_h: c_int,
+        allocator: Allocator,
+    };
+
+    pub fn init(cfg: State.Config) !*State {
+        const state: *State = try cfg.allocator.create(State);
+        state.* = .{
+            .renderer = null,
+            .allocator = cfg.allocator,
+            .window = null,
+            .screen_w = cfg.screen_w,
+            .screen_h = cfg.screen_h,
+            .gl_ctx = null,
+            .gl_procs = null,
+        };
+        return state;
+    }
 };
 
 const RenderError = error{
@@ -107,7 +129,7 @@ const Renderer = struct {
     pub fn flush(r: *self) !void {
         if (r.flushed) return RenderError.AlreadyFlushed;
 
-        for (state.renderer.?.verts.?.items) |vert| {
+        for (r.verts.?.items) |vert| {
             gl_log.debug("verts:{any}\n", .{vert.position});
         }
 
@@ -274,9 +296,9 @@ const Camera = struct {
     rotation: zm.Vec3f = .zero(),
     view: zm.Mat4f = .identity(),
 
-    pub fn update(cam: *Camera, dx_px: f32, dy_px: f32) void {
+    pub fn update(cam: *Camera, left_right_px: f32, up_down_px: f32) void {
         // should be inverted (dy,dx,0)
-        const delta_rot: zm.Vec3f = .{ .data = .{ Camera.px2deg(-dy_px), Camera.px2deg(dx_px), 0 } };
+        const delta_rot: zm.Vec3f = .{ .data = .{ Camera.px2deg(-up_down_px), Camera.px2deg(left_right_px), 0 } };
         cam.rotation.addAssign(delta_rot);
 
         const pitch_limit = std.math.pi / 2.0 - 0.01;
@@ -424,16 +446,6 @@ const Vertex = struct {
     color: zm.Vec3f,
 };
 
-var state: State = .{
-    .renderer = null,
-    .allocator = undefined,
-    .window = null,
-    .screen_w = Window_Width,
-    .screen_h = Window_Height,
-    .gl_ctx = null,
-    .gl_procs = null,
-};
-
 fn create_graphics_pipeline(vertex_shader_src: []const u8, fragment_shader_src: []const u8) !c_uint {
     const program = gl.CreateProgram();
     if (program == 0) return error.GlProgramFailed;
@@ -479,9 +491,14 @@ fn compile_shader(shader_type: comptime_int, shader_source: []const u8) c_uint {
     }
     return shader_obj;
 }
-fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
-    _ = appstate;
+fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     _ = argv;
+
+    const allocator = gpa.allocator();
+
+    appstate.* = try State.init(.{ .screen_w = Window_Width, .screen_h = Window_Height, .allocator = allocator });
+    std.debug.print("before cptr\n", .{});
+    const state: *State = cptr(*State, appstate.*.?);
 
     std.log.debug("{s} {s}", .{ target_triple, @tagName(builtin.mode) });
     const platform: [*:0]const u8 = c.SDL_GetPlatform();
@@ -545,7 +562,7 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     state.renderer.?.scaling = .scale(state.renderer.?.scaling, 1);
     state.renderer.?.cam.update(0, 0);
 
-    //   var quad: Drawable = try .gen_quad(state.allocator);
+    //   var quad: Drawable =
     //   try state.renderer.?.queue(&quad);
 
     //    var quad_side: Drawable = try .rotate(quad, .{ .data = .{ 0, 45, 0 } }, state.renderer.?.allocator);
@@ -562,7 +579,7 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     return c.SDL_APP_CONTINUE;
 }
 
-fn pre_draw() !void {
+fn pre_draw(state: *State) !void {
     try check_gl_error();
     gl.Enable(gl.DEPTH_TEST);
     gl.Disable(gl.CULL_FACE);
@@ -572,10 +589,8 @@ fn pre_draw() !void {
     gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 }
 
-fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
-    _ = appstate;
-
-    try pre_draw();
+fn sdlAppIterate(state: *State) !c.SDL_AppResult {
+    try pre_draw(state);
     if (state.renderer) |*renderer| {
         for (state.renderer.?.drawables.?.items) |*drw| {
             try renderer.update(drw);
@@ -588,9 +603,8 @@ fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     return c.SDL_APP_CONTINUE;
 }
 
-fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
+fn sdlAppEvent(state: *State, event: *c.SDL_Event) !c.SDL_AppResult {
     std.debug.print("clearing...\x1b[2J \n", .{});
-    _ = appstate;
 
     if (event.type == c.SDL_EVENT_QUIT) {
         return c.SDL_APP_SUCCESS;
@@ -636,8 +650,12 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
         if (keyboard[c.SDL_SCANCODE_DOWN]) {
             delta.addAssign(.{ .data = .{ 0, -0.1, 0 } });
         }
-        // if (keyboard[c.SDL_SCANCODE_LEFT]) {}
-        //if (keyboard[c.SDL_SCANCODE_RIGHT]) {}
+        if (keyboard[c.SDL_SCANCODE_LEFT]) {
+            state.renderer.?.cam.update(-10, 0);
+        }
+        if (keyboard[c.SDL_SCANCODE_RIGHT]) {
+            state.renderer.?.cam.update(10, 0);
+        }
 
         state.renderer.?.cam.move(delta);
         std.debug.print("position:{any}\n", .{state.renderer.?.cam.from});
@@ -645,9 +663,8 @@ fn sdlAppEvent(appstate: ?*anyopaque, event: *c.SDL_Event) !c.SDL_AppResult {
     return c.SDL_APP_CONTINUE;
 }
 
-fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
+fn sdlAppQuit(state: *State, result: anyerror!c.SDL_AppResult) void {
     sdl_log.warn("starting app quit\n", .{});
-    _ = appstate;
 
     _ = result catch |err| if (err == error.SdlError) {
         sdl_log.err("{s}\n", .{c.SDL_GetError()});
@@ -677,15 +694,12 @@ fn sdlAppQuit(appstate: ?*anyopaque, result: anyerror!c.SDL_AppResult) void {
     if (state.window != null)
         c.SDL_DestroyWindow(state.window.?);
     c.SDL_Quit();
-    state = State{
-        .renderer = undefined,
-        .window = null,
-        .screen_w = Window_Width,
-        .screen_h = Window_Height,
-        .gl_ctx = null,
-        .gl_procs = null,
-        .allocator = state.allocator,
-    };
+
+    state.allocator.free(state);
+
+    if (gpa.deinit() == .leak) {
+        @panic("GeneralPurposeAllocator leaked");
+    }
 }
 
 fn read_in_shader(alloc: Allocator, shader_path: []const u8) ![]u8 {
@@ -693,10 +707,7 @@ fn read_in_shader(alloc: Allocator, shader_path: []const u8) ![]u8 {
 }
 
 pub fn main() !u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa.deinit() == .leak) @panic("gpa leaked");
-    const allocator = gpa.allocator();
-    state.allocator = allocator;
+    defer if (gpa.deinit() == .leak) @panic("GeneralPurposeAllocator leaked");
 
     app_err.reset();
     var empty_argv: [0:null]?[*:0]u8 = .{};
@@ -712,15 +723,18 @@ fn sdlAppInitC(appstate: ?*?*anyopaque, argc: c_int, argv: ?[*:null]?[*:0]u8) ca
 }
 
 fn sdlAppIterateC(appstate: ?*anyopaque) callconv(.c) c.SDL_AppResult {
-    return sdlAppIterate(appstate) catch |err| app_err.store(err);
+    const state: *State = cptr(*State, appstate.?);
+    return sdlAppIterate(state) catch |err| app_err.store(err);
 }
 
 fn sdlAppEventC(appstate: ?*anyopaque, event: ?*c.SDL_Event) callconv(.c) c.SDL_AppResult {
-    return sdlAppEvent(appstate, event.?) catch |err| app_err.store(err);
+    const state: *State = cptr(*State, appstate.?);
+    return sdlAppEvent(state, event.?) catch |err| app_err.store(err);
 }
 
 fn sdlAppQuitC(appstate: ?*anyopaque, result: c.SDL_AppResult) callconv(.c) void {
-    sdlAppQuit(appstate, app_err.load() orelse result);
+    const state: *State = cptr(*State, appstate.?);
+    sdlAppQuit(state, app_err.load() orelse result);
 }
 
 inline fn c_errify(value: c_int) !void {
@@ -799,3 +813,7 @@ const ErrorStore = struct {
         return es.err;
     }
 };
+
+fn cptr(comptime T: type, data: ?*anyopaque) T {
+    return @ptrCast(@alignCast(data));
+}
