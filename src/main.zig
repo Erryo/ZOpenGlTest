@@ -366,6 +366,47 @@ const Drawable = struct {
         return drw;
     }
 
+    pub fn gen_body(allocator: Allocator, side_len: f32, height: f32, no_sides: u8) !Drawable {
+        var body: Drawable = undefined;
+        var verts = try VertexList.initCapacity(allocator, no_sides + 1);
+        var indices = try ByteList.initCapacity(allocator, (no_sides + 1) * 2);
+
+        const top_face: Drawable = try .gen_polygon(allocator, side_len, no_sides);
+        defer allocator.free(top_face.verts);
+        defer allocator.free(top_face.indices);
+        var bottom_face: Drawable = try .gen_polygon(allocator, side_len, no_sides);
+        defer allocator.free(bottom_face.verts);
+        defer allocator.free(bottom_face.indices);
+        bottom_face.move_by(.{ .data = .{ 0, 0, -height } });
+
+        const offset: u8 = @intCast(top_face.verts.len);
+        for (bottom_face.indices) |*idx| {
+            idx.* += offset;
+        }
+        for (bottom_face.verts) |*v| {
+            v.color = .{ .data = .{ 1, 0, 0 } };
+        }
+
+        try verts.appendSlice(allocator, top_face.verts);
+        try indices.appendSlice(allocator, top_face.indices);
+
+        try verts.appendSlice(allocator, bottom_face.verts);
+        try indices.appendSlice(allocator, bottom_face.indices);
+
+        var current_idx: u8 = 1;
+        while (current_idx + 1 < top_face.verts.len) : (current_idx += 1) {
+            const idcs: [3]u8 = .{ current_idx, current_idx + offset, current_idx + offset + 1 };
+            try indices.appendSlice(allocator, &idcs);
+            const idcs_2: [3]u8 = .{ current_idx, current_idx + offset + 1, current_idx + 1 };
+            try indices.appendSlice(allocator, &idcs_2);
+        }
+
+        body.verts = try verts.toOwnedSlice(allocator);
+        body.indices = try indices.toOwnedSlice(allocator);
+        body.index_start = null;
+        return body;
+    }
+
     pub fn gen_polygon(allocator: Allocator, side_len: f32, no_sides: u8) !Drawable {
         var drw: Drawable = undefined;
         var verts = try VertexList.initCapacity(allocator, no_sides + 1);
@@ -610,12 +651,14 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     // cube_2.move_by(.{ .data = .{ 2, 2, 1 } });
     // try state.renderer.?.queue(&cube_2);
 
-    var poly_12: Drawable = try Drawable.gen_polygon(state.renderer.?.allocator, 1, 12);
-    try state.renderer.?.queue(&poly_12);
+    var body: Drawable = try .gen_body(allocator, 1, 3, 20);
+    try state.renderer.?.queue(&body);
+    // var poly_12: Drawable = try Drawable.gen_polygon(state.renderer.?.allocator, 1, 12);
+    // try state.renderer.?.queue(&poly_12);
 
-    var poly_4: Drawable = try Drawable.gen_polygon(state.renderer.?.allocator, 1, 4);
-    poly_4.move_by(.{ .data = .{ 2, 2, 1 } });
-    try state.renderer.?.queue(&poly_4);
+    // var poly_4: Drawable = try Drawable.gen_polygon(state.renderer.?.allocator, 1, 4);
+    // poly_4.move_by(.{ .data = .{ 2, 2, 1 } });
+    // try state.renderer.?.queue(&poly_4);
 
     try state.renderer.?.flush();
     try errify(c.SDL_SetWindowRelativeMouseMode(state.window, true));
