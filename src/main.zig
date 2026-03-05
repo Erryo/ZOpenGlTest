@@ -520,9 +520,9 @@ const Drawable = struct {
         const y_axis: zm.Vec3f = .{ .data = .{ 0, 1, 0 } };
         const z_axis: zm.Vec3f = .{ .data = .{ 0, 0, 1 } };
 
-        const x_rot: zm.Mat4f = .rotationRH(x_axis, deg2rad(rot.data[0]));
-        const y_rot: zm.Mat4f = .rotationRH(y_axis, deg2rad(rot.data[1]));
-        const z_rot: zm.Mat4f = .rotationRH(z_axis, deg2rad(rot.data[2]));
+        const x_rot: zm.Mat4f = rotation_rh(x_axis, deg2rad(rot.data[0]));
+        const y_rot: zm.Mat4f = rotation_rh(y_axis, deg2rad(rot.data[1]));
+        const z_rot: zm.Mat4f = rotation_rh(z_axis, deg2rad(rot.data[2]));
 
         return z_rot.multiply(y_rot).multiply(x_rot);
     }
@@ -566,6 +566,26 @@ const Drawable = struct {
         }
     }
 };
+
+fn rotation_rh(axis: zm.Vec3f, angle_rads: f32) zm.Mat4f {
+    const normalized = axis.norm();
+    const x = normalized.data[0];
+    const y = normalized.data[1];
+    const z = normalized.data[2];
+
+    const cos_rads = std.math.cos(angle_rads);
+    const s = std.math.sin(angle_rads);
+    const omc = 1.0 - cos_rads;
+
+    return zm.Mat4f{
+        .data = .{
+            .{ x * x * omc + cos_rads, x * y * omc - z * s, x * z * omc + y * s, 0 },
+            .{ y * x * omc + z * s, y * y * omc + cos_rads, y * z * omc - x * s, 0 },
+            .{ z * x * omc - y * s, z * y * omc + x * s, z * z * omc + cos_rads, 0 },
+            .{ 0, 0, 0, 1 },
+        },
+    };
+}
 
 const Vertex = struct {
     position: zm.Vec3f,
