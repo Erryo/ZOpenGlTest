@@ -515,9 +515,21 @@ const Drawable = struct {
         return drw;
     }
 
+    fn rotation_from_euler_degrees(rot: zm.Vec3f) zm.Mat4f {
+        const x_axis: zm.Vec3f = .{ .data = .{ 1, 0, 0 } };
+        const y_axis: zm.Vec3f = .{ .data = .{ 0, 1, 0 } };
+        const z_axis: zm.Vec3f = .{ .data = .{ 0, 0, 1 } };
+
+        const x_rot: zm.Mat4f = .rotationRH(x_axis, deg2rad(rot.data[0]));
+        const y_rot: zm.Mat4f = .rotationRH(y_axis, deg2rad(rot.data[1]));
+        const z_rot: zm.Mat4f = .rotationRH(z_axis, deg2rad(rot.data[2]));
+
+        return z_rot.multiply(y_rot).multiply(x_rot);
+    }
+
     pub fn rotate(drw: Drawable, rot: zm.Vec3f, allocator: Allocator) !Drawable {
         var new_obj: Drawable = .{ .index_start = null, .verts = undefined, .indices = undefined };
-        const rotation_mat: zm.Mat4f = .rotationRH(rot.norm(), deg2rad(rot.len()));
+        const rotation_mat = rotation_from_euler_degrees(rot);
         new_obj.verts = try allocator.dupe(Vertex, drw.verts);
         new_obj.indices = try allocator.dupe(u8, drw.indices);
         for (new_obj.verts) |*v| {
@@ -529,7 +541,7 @@ const Drawable = struct {
     }
 
     pub fn rotate_assign(drw: *Drawable, rot: zm.Vec3f) void {
-        const rotation_mat: zm.Mat4f = .rotationRH(rot.norm(), deg2rad(rot.len()));
+        const rotation_mat = rotation_from_euler_degrees(rot);
         for (drw.verts) |*v| {
             const pos4 = zm.Vec4f{ .data = .{ v.position.data[0], v.position.data[1], v.position.data[2], 1.0 } };
             const rotated = rotation_mat.multiplyVec(pos4);
