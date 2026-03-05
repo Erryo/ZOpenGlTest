@@ -555,9 +555,20 @@ const Drawable = struct {
         }
     }
 
-    pub fn move_to(drw: *Drawable, target: zm.Vec3f) void {
+    pub fn set_color(drw: *Drawable, color: zm.Vec3f) void {
         for (drw.verts) |*vert| {
-            vert.*.position = target;
+            vert.color = color;
+        }
+    }
+
+    pub fn move_to(drw: *Drawable, axis: zm.Vec3f) void {
+        for (drw.verts) |*vert| {
+            if (axis.data[0] != std.math.inf(f32))
+                vert.*.position.data[0] = axis.data[0];
+            if (axis.data[1] != std.math.inf(f32))
+                vert.*.position.data[1] = axis.data[1];
+            if (axis.data[2] != std.math.inf(f32))
+                vert.*.position.data[2] = axis.data[2];
         }
     }
     pub fn move_by(drw: *Drawable, target: zm.Vec3f) void {
@@ -718,6 +729,9 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     //
     var plane = try Drawable.gen_quad(allocator);
     plane.rotate_assign(.{ .data = .{ 90, 0, 0 } });
+    plane.scale_assign(3);
+    plane.move_to(.{ .data = .{ std.math.inf(f32), 0, std.math.inf(f32) } });
+    plane.set_color(.{ .data = .{ 0.53, 0.53, 0.53 } });
     try state.renderer.?.queue(&plane);
 
     //    var pyramid = try Drawable.gen_pyramid(allocator, 1, 2, 12);
