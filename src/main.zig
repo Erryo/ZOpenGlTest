@@ -537,6 +537,12 @@ const Drawable = struct {
         }
     }
 
+    pub fn scale_assign(drw: *Drawable, scaler: f32) void {
+        for (drw.verts) |*vert| {
+            vert.*.position.scaleAssign(scaler);
+        }
+    }
+
     pub fn move_to(drw: *Drawable, target: zm.Vec3f) void {
         for (drw.verts) |*vert| {
             vert.*.position = target;
@@ -669,21 +675,23 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     state.renderer.?.scaling = .scale(state.renderer.?.scaling, 1);
     state.renderer.?.cam.update(0, 0);
 
-    //   var quad: Drawable =
-    //   try state.renderer.?.queue(&quad);
-
-    //    var quad_side: Drawable = try .rotate(quad, .{ .data = .{ 0, 45, 0 } }, state.renderer.?.allocator);
-    //    try state.renderer.?.queue(&quad_side);
+    var quad: Drawable = try .gen_quad(allocator);
+    try state.renderer.?.queue(&quad);
 
     // var cube: Drawable = try .gen_cube(state.renderer.?.allocator);
     // try state.renderer.?.queue(&cube);
     // var cube_2: Drawable = try .gen_cube(state.renderer.?.allocator);
     // cube_2.move_by(.{ .data = .{ 2, 2, 1 } });
     // try state.renderer.?.queue(&cube_2);
+    //
+    var plane = try Drawable.gen_quad(allocator);
+    plane.rotate_assign(.{ .data = .{ 90, 0, 0 } });
+    try state.renderer.?.queue(&plane);
 
-    var pyramid = try Drawable.gen_pyramid(allocator, 1, 2, 12);
-
-    try state.renderer.?.queue(&pyramid);
+    //    var pyramid = try Drawable.gen_pyramid(allocator, 1, 2, 12);
+    //    pyramid.scale_assign(0.2);
+    //
+    //    try state.renderer.?.queue(&pyramid);
     //    var cylinder: Drawable = try .gen_body(allocator, 1, 3, 20);
     //    try state.renderer.?.queue(&cylinder);
     //
@@ -727,7 +735,7 @@ fn sdlAppIterate(state: *State) !c.SDL_AppResult {
 }
 
 fn sdlAppEvent(state: *State, event: *c.SDL_Event) !c.SDL_AppResult {
-    std.debug.print("clearing...\x1b[2J \n", .{});
+    // std.debug.print("clearing...\x1b[2J \n", .{});
 
     if (event.type == c.SDL_EVENT_QUIT) {
         return c.SDL_APP_SUCCESS;
