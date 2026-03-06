@@ -126,9 +126,10 @@ const Renderer = struct {
         r.program = null;
 
         if (r.batches != null) {
-            var iterator = r.batches.?.valueIterator();
-            while (iterator.next()) |batch| {
-                try batch.deinit(r.allocator);
+            var iterator = r.batches.?.iterator();
+            while (iterator.next()) |entry| {
+                std.debug.print("destroying batch: key:{s}\n", .{entry.key_ptr.*});
+                try entry.value_ptr.deinit(r.allocator);
             }
             r.batches.?.deinit();
         }
@@ -225,14 +226,12 @@ const Batch = struct {
 
         try check_gl_error(); // error 1282
         batch.drawables = try DrawableList.initCapacity(allocator, 2);
-        errdefer batch.drawables.?.deinit(allocator);
 
         batch.verts = try VertexList.initCapacity(allocator, 6);
-        errdefer batch.verts.?.deinit(allocator);
 
+        batch.indices = null;
         if (indexed) {
             batch.indices = try ByteList.initCapacity(allocator, 12);
-            errdefer batch.indices.?.deinit(allocator);
         }
 
         return batch;
@@ -243,13 +242,11 @@ const Batch = struct {
         defer b.no_verts += @intCast(drw.verts.len);
 
         if (b.indices) |*indices| {
-            if (drw.indices.len != 0) std.debug.print("received indexed object for non indexed draw\n", .{});
-
-            for (drw.indices) |*idx| {
+            for (drw.indices.?) |*idx| {
                 idx.* += b.no_verts;
             }
-            try indices.appendSlice(allocator, drw.indices);
-        }
+            try indices.appendSlice(allocator, drw.indices.?);
+        } else if (drw.indices != null and drw.indices.?.len != 0) std.debug.print("received indexed object for non indexed draw\n", .{});
 
         try b.drawables.?.append(allocator, drw.*);
         try b.verts.?.appendSlice(allocator, drw.verts);
@@ -266,8 +263,11 @@ const Batch = struct {
         gl.BindBuffer(gl.ARRAY_BUFFER, b.vbo.?);
         gl.BufferData(gl.ARRAY_BUFFER, @intCast(b.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(b.verts.?.items), gl.DYNAMIC_DRAW);
 
-        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.ibo.?);
-        gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, @intCast(b.indices.?.items.len * @sizeOf(Index_Type)), @ptrCast(b.indices.?.items), gl.STATIC_DRAW);
+        std.debug.print("while flushing: b.indices:{any} b.ibo:{any}\n", .{ b.indices, b.ibo });
+        if (b.ibo != null) {
+            gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.ibo.?);
+            gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, @intCast(b.indices.?.items.len * @sizeOf(Index_Type)), @ptrCast(b.indices.?.items), gl.STATIC_DRAW);
+        }
     }
 
     pub fn update(b: *Batch, drw: *Drawable) !void {
@@ -297,21 +297,24 @@ const Batch = struct {
             gl.DeleteBuffers(1, (&b.vbo.?)[0..1]);
         b.vbo = null;
 
+        std.debug.print("b.indices:{any} b.ibo:{any}\n", .{ b.indices, b.ibo });
         if (b.indices != null)
             b.indices.?.deinit(allocator);
         b.indices = null;
         if (b.verts != null)
             b.verts.?.deinit(allocator);
+        b.verts = null;
 
         if (b.drawables != null) {
-            for (b.drawables.?.items) |drw| {
+            for (b.drawables.?.items) |*drw| {
                 allocator.free(drw.verts);
-                allocator.free(drw.indices);
+                if (drw.indices != null) {
+                    allocator.free(drw.indices.?);
+                }
             }
             b.drawables.?.deinit(allocator);
         }
         b.drawables = null;
-        b.verts = null;
         b.no_verts = 0;
         b.flushed = false;
     }
@@ -377,8 +380,63 @@ const Camera = struct {
 
 const Drawable = struct {
     verts: []Vertex,
-    indices: []Index_Type,
+    indices: ?[]Index_Type,
     index_start: ?usize,
+
+    // from < to
+    pub fn gen_grid(allocator: Allocator, from: zm.Vec3f, to: zm.Vec3f, spacing: f32) !Drawable {
+        var grid: Drawable = .{ .indices = null, .verts = undefined, .index_start = null };
+        var verts = try VertexList.initCapacity(allocator, 6);
+
+        {
+            var x: f32 = from.data[0];
+
+            while (x <= to.data[0]) : (x += spacing) {
+                std.debug.print("x:{d}\n", .{x});
+                const start = Vertex{
+                    .color = .{ .data = .{ 1, 1, 1 } },
+
+                    .position = .{ .data = .{ x, from.data[1], from.data[2] } },
+                };
+
+                const end = Vertex{
+                    .color = .{ .data = .{ 1, 1, 1 } },
+
+                    .position = .{ .data = .{ x, to.data[1], to.data[2] } },
+                };
+
+                try verts.append(allocator, start);
+
+                try verts.append(allocator, end);
+            }
+        }
+        {
+            var z: f32 = from.data[2];
+
+            while (z <= to.data[2]) : (z += spacing) {
+                std.debug.print("z:{d}\n", .{z});
+                const start = Vertex{
+                    .color = .{ .data = .{ 1, 1, 1 } },
+
+                    .position = .{ .data = .{ from.data[0], from.data[1], z } },
+                };
+
+                const end = Vertex{
+                    .color = .{ .data = .{ 1, 1, 1 } },
+
+                    .position = .{ .data = .{ to.data[0], to.data[1], z } },
+                };
+
+                try verts.append(allocator, start);
+
+                try verts.append(allocator, end);
+            }
+        }
+
+        grid.verts = try verts.toOwnedSlice(allocator);
+        grid.index_start = null;
+        return grid;
+    }
 
     pub fn gen_quad(allocator: Allocator) !Drawable {
         var drw: Drawable = undefined;
@@ -404,10 +462,11 @@ const Drawable = struct {
 
         const top_face: Drawable = try .gen_polygon(allocator, side_len, no_sides);
         defer allocator.free(top_face.verts);
-        defer allocator.free(top_face.indices);
+        if (top_face.indices == null) @panic("indices == null");
+        defer allocator.free(top_face.indices.?);
 
         try verts.appendSlice(allocator, top_face.verts);
-        try indices.appendSlice(allocator, top_face.indices);
+        try indices.appendSlice(allocator, top_face.indices.?);
 
         try verts.append(allocator, Vertex{
             .color = .{ .data = .{ 1, 0, 0 } },
@@ -434,14 +493,16 @@ const Drawable = struct {
 
         const top_face: Drawable = try .gen_polygon(allocator, side_len, no_sides);
         defer allocator.free(top_face.verts);
-        defer allocator.free(top_face.indices);
+        defer allocator.free(top_face.indices.?);
+        if (top_face.indices == null) @panic("indices == null");
+
         var bottom_face: Drawable = try .gen_polygon(allocator, side_len, no_sides);
         defer allocator.free(bottom_face.verts);
-        defer allocator.free(bottom_face.indices);
+        defer allocator.free(bottom_face.indices.?);
         bottom_face.move_by(.{ .data = .{ 0, 0, -height } });
 
         const offset: Index_Type = @intCast(top_face.verts.len);
-        for (bottom_face.indices) |*idx| {
+        for (bottom_face.indices.?) |*idx| {
             idx.* += offset;
         }
         for (bottom_face.verts) |*v| {
@@ -449,10 +510,10 @@ const Drawable = struct {
         }
 
         try verts.appendSlice(allocator, top_face.verts);
-        try indices.appendSlice(allocator, top_face.indices);
+        try indices.appendSlice(allocator, top_face.indices.?);
 
         try verts.appendSlice(allocator, bottom_face.verts);
-        try indices.appendSlice(allocator, bottom_face.indices);
+        try indices.appendSlice(allocator, bottom_face.indices.?);
 
         var current_idx: Index_Type = 1;
         while (current_idx + 1 < top_face.verts.len) : (current_idx += 1) {
@@ -559,10 +620,10 @@ const Drawable = struct {
     }
 
     pub fn rotate(drw: Drawable, rot: zm.Vec3f, allocator: Allocator) !Drawable {
-        var new_obj: Drawable = .{ .index_start = null, .verts = undefined, .indices = undefined };
+        var new_obj: Drawable = .{ .index_start = null, .verts = undefined, .indices = null };
         const rotation_mat = rotation_from_euler_degrees(rot);
         new_obj.verts = try allocator.dupe(Vertex, drw.verts);
-        new_obj.indices = try allocator.dupe(Index_Type, drw.indices);
+        new_obj.indices = try allocator.dupe(Index_Type, drw.indices.?);
         for (new_obj.verts) |*v| {
             const pos4 = zm.Vec4f{ .data = .{ v.position.data[0], v.position.data[1], v.position.data[2], 1.0 } };
             const rotated = rotation_mat.multiplyVec(pos4);
@@ -751,21 +812,20 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 
     var triangle_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.TRIANGLES, true);
 
-    // var cube: Drawable = try .gen_cube(state.renderer.?.allocator);
+    var cube: Drawable = try .gen_cube(state.renderer.?.allocator);
     // try state.renderer.?.queue(&cube);
-    // var cube_2: Drawable = try .gen_cube(state.renderer.?.allocator);
-    // cube_2.move_by(.{ .data = .{ 2, 2, 1 } });
+    var cube_2: Drawable = try .gen_cube(state.renderer.?.allocator);
+    cube_2.move_by(.{ .data = .{ 2, 2, 1 } });
     // try state.renderer.?.queue(&cube_2);
-    //
-    var plane = try Drawable.gen_quad(allocator);
-    plane.rotate_assign(.{ .data = .{ 90, 0, 0 } });
-    plane.scale_assign(3);
-    plane.move_to(.{ .data = .{ std.math.inf(f32), 0, std.math.inf(f32) } });
-    plane.set_color(.{ .data = .{ 0.53, 0.53, 0.53 } });
-    try triangle_batch.queue(&plane, state.renderer.?.allocator);
 
-    //    var pyramid = try Drawable.gen_pyramid(allocator, 1, 2, 12);
-    //    pyramid.scale_assign(0.2);
+    try triangle_batch.queue(&cube, state.renderer.?.allocator);
+    try triangle_batch.queue(&cube_2, state.renderer.?.allocator);
+
+    var pyramid = try Drawable.gen_pyramid(allocator, 1, 2, 12);
+    pyramid.scale_assign(0.2);
+    pyramid.move_by(.{ .data = .{ -5, 0, 2 } });
+    //    pyramid.move_to(.{ .data = .{ 4, std.math.inf(f32), std.math.inf(f32) } });
+    try triangle_batch.queue(&pyramid, state.renderer.?.allocator);
     //
     //    try state.renderer.?.queue(&pyramid);
     //    var cylinder: Drawable = try .gen_body(allocator, 1, 3, 20);
@@ -783,6 +843,12 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 
     try triangle_batch.flush();
     try state.renderer.?.batches.?.put("triangle____", triangle_batch);
+    //
+    var line_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.LINES, false);
+    var grid = try Drawable.gen_grid(allocator, .{ .data = .{ -10, 0, -10 } }, .{ .data = .{ 10, 0, 10 } }, 1);
+    try line_batch.queue(&grid, allocator);
+    try line_batch.flush();
+    try state.renderer.?.batches.?.put("lines_______", line_batch);
 
     try errify(c.SDL_SetWindowRelativeMouseMode(state.window, true));
     return c.SDL_APP_CONTINUE;
