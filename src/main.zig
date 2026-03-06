@@ -38,7 +38,9 @@ var Perspective_Mat_idx: usize = 0;
 
 const VertexList = std.ArrayList(Vertex);
 const DrawableList = std.ArrayList(Drawable);
-const ByteList = std.ArrayList(u8);
+const ByteList = std.ArrayList(Index_Type);
+const BatchMap = std.AutoHashMap(*const [12:0]u8, Batch);
+const Index_Type = u32;
 
 const State = struct {
     window: ?*c.SDL_Window,
@@ -77,82 +79,26 @@ const RenderError = error{
 };
 
 const Renderer = struct {
-    const self = @This();
-    drawables: ?DrawableList = null,
-    verts: ?VertexList = null,
-    indices: ?ByteList = null,
     program: ?Program = null,
+    batches: ?BatchMap = null,
 
     cam: Camera = .{},
     matrix: zm.Mat4f = .identity(),
     projection: zm.Mat4f = .identity(),
     scaling: zm.Mat4f = .identity(),
 
-    no_verts: u8 = 0,
     allocator: Allocator,
-    flushed: bool = false,
 
-    pub const Config = struct {
-        allocator: Allocator,
-        program: Program,
-    };
-    /// initialize all requiered values,rest null
-    pub fn init(cfg: Config) !self {
-        var renderer: Renderer = .{
-            .allocator = cfg.allocator,
-        };
-        renderer.drawables = try DrawableList.initCapacity(renderer.allocator, 2);
-        errdefer renderer.drawables.?.deinit(renderer.allocator);
-
-        renderer.verts = try VertexList.initCapacity(renderer.allocator, 6);
-        errdefer renderer.verts.?.deinit(renderer.allocator);
-
-        renderer.indices = try ByteList.initCapacity(renderer.allocator, 12);
-        errdefer renderer.indices.?.deinit(renderer.allocator);
-
-        renderer.program = cfg.program;
-
-        return renderer;
-    }
-    pub fn queue(r: *self, drw: *Drawable) !void {
-        drw.index_start = r.no_verts;
-        defer r.no_verts += @intCast(drw.verts.len);
-
-        for (drw.indices) |*idx| {
-            idx.* += r.no_verts;
-        }
-
-        try r.drawables.?.append(r.allocator, drw.*);
-        try r.indices.?.appendSlice(r.allocator, drw.indices);
-        try r.verts.?.appendSlice(r.allocator, drw.verts);
-    }
-    pub fn flush(r: *self) !void {
-        if (r.flushed) return RenderError.AlreadyFlushed;
-
-        for (r.verts.?.items) |vert| {
-            gl_log.debug("verts:{any}\n", .{vert.position});
-        }
-
-        gl.BindVertexArray(r.program.?.vao.?);
-        gl.BindBuffer(gl.ARRAY_BUFFER, r.program.?.vbo.?);
-        gl.BufferData(gl.ARRAY_BUFFER, @intCast(r.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(r.verts.?.items), gl.DYNAMIC_DRAW);
-
-        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.program.?.ibo.?);
-        gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, @intCast(r.indices.?.items.len * @sizeOf(u8)), @ptrCast(r.indices.?.items), gl.STATIC_DRAW);
-
-        defer r.flushed = true;
+    pub fn init(allocator: Allocator, program: Program) !Renderer {
+        var r: Renderer = .{ .allocator = allocator };
+        r.batches = BatchMap.init(r.allocator);
+        r.program = program;
+        return r;
     }
 
-    pub fn update(r: *self, drw: *Drawable) !void {
-        r.verts.?.replaceRangeAssumeCapacity(drw.index_start.?, drw.verts.len, drw.verts);
-    }
-    pub fn draw(r: *self) !void {
+    pub fn draw(r: *Renderer) !void {
         try check_gl_error();
         gl.UseProgram(r.program.?.program.?);
-        gl.BindVertexArray(r.program.?.vao.?);
-        gl.BindBuffer(gl.ARRAY_BUFFER, r.program.?.vbo.?);
-        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, r.program.?.ibo.?);
-        gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(r.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(r.verts.?.items));
 
         r.matrix = r.matrix.multiply(r.projection);
         r.matrix = r.matrix.multiply(r.cam.view);
@@ -163,45 +109,43 @@ const Renderer = struct {
         gl.UniformMatrix4fv(r.program.?.matrix_location.?, 1, gl.TRUE, flat);
         r.matrix = .identity();
 
-        gl.DrawElements(gl.TRIANGLES, @intCast(r.indices.?.items.len), gl.UNSIGNED_BYTE, 0);
+        try check_gl_error();
+
+        if (r.batches == null) return;
+        var iterator = r.batches.?.valueIterator();
+        while (iterator.next()) |b| {
+            try check_gl_error();
+            b.draw();
+        }
     }
 
-    pub fn deinit(r: *self) !void {
-        if (r.indices != null)
-            r.indices.?.deinit(r.allocator);
-        r.indices = null;
-        if (r.verts != null)
-            r.verts.?.deinit(r.allocator);
-
-        if (r.drawables != null) {
-            for (r.drawables.?.items) |drw| {
-                r.allocator.free(drw.verts);
-                r.allocator.free(drw.indices);
-            }
-            r.drawables.?.deinit(r.allocator);
+    pub fn deinit(r: *Renderer) !void {
+        if (r.program != null) {
+            try r.program.?.deinit();
         }
-        r.drawables = null;
-        r.verts = null;
         r.program = null;
-        r.no_verts = 0;
-        r.flushed = false;
+
+        if (r.batches != null) {
+            var iterator = r.batches.?.valueIterator();
+            while (iterator.next()) |batch| {
+                try batch.deinit(r.allocator);
+            }
+            r.batches.?.deinit();
+        }
+        r.batches = null;
     }
 };
 
 const Program = struct {
     program: ?c_uint = null,
-    vao: ?c_uint = null,
-    vbo: ?c_uint = null,
-    ibo: ?c_uint = null,
     matrix_location: ?c_int = null,
 
     pub const Config = struct {
         vertex_src_path: []const u8,
         fragment_src_path: []const u8,
-        program: ?c_uint = null,
     };
 
-    pub fn init_program_only(allocator: Allocator, cfg: Config) !Program {
+    pub fn init(allocator: Allocator, cfg: Config) !Program {
         var program = Program{};
 
         const vertex_glsl_src = try read_in_shader(allocator, cfg.vertex_src_path);
@@ -209,34 +153,46 @@ const Program = struct {
         const fragment_glsl_src = try read_in_shader(allocator, cfg.fragment_src_path);
         defer allocator.free(fragment_glsl_src);
         program.program = try create_graphics_pipeline(vertex_glsl_src, fragment_glsl_src);
+        program.matrix_location = gl.GetUniformLocation(program.program.?, "u_Matrix");
+        try check_gl_error();
+        return program;
     }
 
-    pub fn init(allocator: Allocator, cfg: Config) !Program {
-        var program = Program{};
+    pub fn deinit(p: *Program) !void {
+        if (p.program != null)
+            gl.DeleteProgram(p.program.?);
+        p.program = null;
+    }
+};
 
-        if (cfg.program) |prg| {
-            program.program = prg;
-        } else {
-            const vertex_glsl_src = try read_in_shader(allocator, cfg.vertex_src_path);
-            defer allocator.free(vertex_glsl_src);
-            const fragment_glsl_src = try read_in_shader(allocator, cfg.fragment_src_path);
-            defer allocator.free(fragment_glsl_src);
-            program.program = try create_graphics_pipeline(vertex_glsl_src, fragment_glsl_src);
-        }
+const Batch = struct {
+    no_verts: u32 = 0,
+    flushed: bool = false,
+    drawables: ?DrawableList = null,
+    verts: ?VertexList = null,
+    indices: ?ByteList = null,
+    vao: ?c_uint = null,
+    vbo: ?c_uint = null,
+    ibo: ?c_uint = null,
+    drawing_primitive: c_uint,
 
-        program.vao = undefined;
-        gl.GenVertexArrays(1, @ptrCast((&program.vao.?)));
-        gl.BindVertexArray(program.vao.?);
+    pub fn init(program: Program, allocator: Allocator, drawing_primitive: c_uint, indexed: bool) !Batch {
+        var batch: Batch = .{ .drawing_primitive = drawing_primitive };
+        batch.vao = undefined;
+        gl.GenVertexArrays(1, @ptrCast((&batch.vao.?)));
+        gl.BindVertexArray(batch.vao.?);
         defer gl.BindVertexArray(0);
 
-        program.ibo = undefined;
-        program.vbo = undefined;
-        gl.GenBuffers(1, @ptrCast((&program.vbo.?)));
-        gl.GenBuffers(1, @ptrCast((&program.ibo.?)));
-        gl.BindBuffer(gl.ARRAY_BUFFER, program.vbo.?);
-        try check_gl_error();
+        batch.vbo = undefined;
+        gl.GenBuffers(1, @ptrCast((&batch.vbo.?)));
 
-        program.matrix_location = gl.GetUniformLocation(program.program.?, "u_Matrix");
+        if (indexed) {
+            batch.ibo = undefined;
+            gl.GenBuffers(1, @ptrCast((&batch.ibo.?)));
+        }
+
+        gl.BindBuffer(gl.ARRAY_BUFFER, batch.vbo.?);
+        try check_gl_error();
 
         {
             const attrib_location: c_uint = @intCast(gl.GetAttribLocation(program.program.?, "a_Position"));
@@ -268,21 +224,96 @@ const Program = struct {
         }
 
         try check_gl_error(); // error 1282
-        return program;
+        batch.drawables = try DrawableList.initCapacity(allocator, 2);
+        errdefer batch.drawables.?.deinit(allocator);
+
+        batch.verts = try VertexList.initCapacity(allocator, 6);
+        errdefer batch.verts.?.deinit(allocator);
+
+        if (indexed) {
+            batch.indices = try ByteList.initCapacity(allocator, 12);
+            errdefer batch.indices.?.deinit(allocator);
+        }
+
+        return batch;
     }
-    pub fn deinit(p: *Program) !void {
-        if (p.vao != null)
-            gl.DeleteVertexArrays(1, (&p.vbo.?)[0..1]);
-        p.vao = null;
-        if (p.ibo != null)
-            gl.DeleteBuffers(1, (&p.ibo.?)[0..1]);
-        p.ibo = null;
-        if (p.vbo != null)
-            gl.DeleteBuffers(1, (&p.vbo.?)[0..1]);
-        p.vbo = null;
-        if (p.program != null)
-            gl.DeleteProgram(p.program.?);
-        p.program = null;
+
+    pub fn queue(b: *Batch, drw: *Drawable, allocator: Allocator) !void {
+        drw.index_start = b.no_verts;
+        defer b.no_verts += @intCast(drw.verts.len);
+
+        if (b.indices) |*indices| {
+            if (drw.indices.len != 0) std.debug.print("received indexed object for non indexed draw\n", .{});
+
+            for (drw.indices) |*idx| {
+                idx.* += b.no_verts;
+            }
+            try indices.appendSlice(allocator, drw.indices);
+        }
+
+        try b.drawables.?.append(allocator, drw.*);
+        try b.verts.?.appendSlice(allocator, drw.verts);
+    }
+    pub fn flush(b: *Batch) !void {
+        if (b.flushed) return RenderError.AlreadyFlushed;
+
+        for (b.verts.?.items) |vert| {
+            gl_log.debug("verts:{any}\n", .{vert.position});
+        }
+        defer b.flushed = true;
+
+        gl.BindVertexArray(b.vao.?);
+        gl.BindBuffer(gl.ARRAY_BUFFER, b.vbo.?);
+        gl.BufferData(gl.ARRAY_BUFFER, @intCast(b.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(b.verts.?.items), gl.DYNAMIC_DRAW);
+
+        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.ibo.?);
+        gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, @intCast(b.indices.?.items.len * @sizeOf(Index_Type)), @ptrCast(b.indices.?.items), gl.STATIC_DRAW);
+    }
+
+    pub fn update(b: *Batch, drw: *Drawable) !void {
+        b.verts.?.replaceRangeAssumeCapacity(drw.index_start.?, drw.verts.len, drw.verts);
+    }
+    pub fn draw(b: *Batch) void {
+        gl.BindVertexArray(b.vao.?);
+        gl.BindBuffer(gl.ARRAY_BUFFER, b.vbo.?);
+        gl.BufferSubData(gl.ARRAY_BUFFER, 0, @intCast(b.verts.?.items.len * @sizeOf(Vertex)), @ptrCast(b.verts.?.items));
+
+        if (b.indices != null) {
+            gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.ibo.?);
+            gl.DrawElements(b.drawing_primitive, @intCast(b.indices.?.items.len), gl.UNSIGNED_INT, 0);
+        } else {
+            gl.DrawArrays(b.drawing_primitive, 0, @intCast(b.verts.?.items.len));
+        }
+    }
+
+    pub fn deinit(b: *Batch, allocator: Allocator) !void {
+        if (b.vao != null)
+            gl.DeleteVertexArrays(1, (&b.vbo.?)[0..1]);
+        b.vao = null;
+        if (b.ibo != null)
+            gl.DeleteBuffers(1, (&b.ibo.?)[0..1]);
+        b.ibo = null;
+        if (b.vbo != null)
+            gl.DeleteBuffers(1, (&b.vbo.?)[0..1]);
+        b.vbo = null;
+
+        if (b.indices != null)
+            b.indices.?.deinit(allocator);
+        b.indices = null;
+        if (b.verts != null)
+            b.verts.?.deinit(allocator);
+
+        if (b.drawables != null) {
+            for (b.drawables.?.items) |drw| {
+                allocator.free(drw.verts);
+                allocator.free(drw.indices);
+            }
+            b.drawables.?.deinit(allocator);
+        }
+        b.drawables = null;
+        b.verts = null;
+        b.no_verts = 0;
+        b.flushed = false;
     }
 };
 
@@ -346,7 +377,7 @@ const Camera = struct {
 
 const Drawable = struct {
     verts: []Vertex,
-    indices: []u8,
+    indices: []Index_Type,
     index_start: ?usize,
 
     pub fn gen_quad(allocator: Allocator) !Drawable {
@@ -358,10 +389,10 @@ const Drawable = struct {
             Vertex{ .position = .{ .data = .{ 1, 1, 1 } }, .color = .{ .data = .{ 0, 0, 1 } } },
         };
 
-        const indices = [_]u8{ 0, 1, 2, 0, 2, 3 };
+        const indices = [_]Index_Type{ 0, 1, 2, 0, 2, 3 };
 
         drw.verts = try allocator.dupe(Vertex, &vertices);
-        drw.indices = try allocator.dupe(u8, &indices);
+        drw.indices = try allocator.dupe(Index_Type, &indices);
         drw.index_start = null;
         return drw;
     }
@@ -382,11 +413,11 @@ const Drawable = struct {
             .color = .{ .data = .{ 1, 0, 0 } },
             .position = .{ .data = .{ 0, 0, height } },
         });
-        const point_idx: u8 = @as(u8, @intCast(verts.items.len)) - 1;
+        const point_idx: Index_Type = @as(Index_Type, @intCast(verts.items.len)) - 1;
 
-        var current_idx: u8 = 1;
+        var current_idx: Index_Type = 1;
         while (current_idx + 1 < top_face.verts.len) : (current_idx += 1) {
-            const idcs: [3]u8 = .{ point_idx, current_idx, current_idx + 1 };
+            const idcs: [3]Index_Type = .{ point_idx, current_idx, current_idx + 1 };
             try indices.appendSlice(allocator, &idcs);
         }
 
@@ -409,7 +440,7 @@ const Drawable = struct {
         defer allocator.free(bottom_face.indices);
         bottom_face.move_by(.{ .data = .{ 0, 0, -height } });
 
-        const offset: u8 = @intCast(top_face.verts.len);
+        const offset: Index_Type = @intCast(top_face.verts.len);
         for (bottom_face.indices) |*idx| {
             idx.* += offset;
         }
@@ -423,11 +454,11 @@ const Drawable = struct {
         try verts.appendSlice(allocator, bottom_face.verts);
         try indices.appendSlice(allocator, bottom_face.indices);
 
-        var current_idx: u8 = 1;
+        var current_idx: Index_Type = 1;
         while (current_idx + 1 < top_face.verts.len) : (current_idx += 1) {
-            const idcs: [3]u8 = .{ current_idx, current_idx + offset, current_idx + offset + 1 };
+            const idcs: [3]Index_Type = .{ current_idx, current_idx + offset, current_idx + offset + 1 };
             try indices.appendSlice(allocator, &idcs);
-            const idcs_2: [3]u8 = .{ current_idx, current_idx + offset + 1, current_idx + 1 };
+            const idcs_2: [3]Index_Type = .{ current_idx, current_idx + offset + 1, current_idx + 1 };
             try indices.appendSlice(allocator, &idcs_2);
         }
 
@@ -460,9 +491,9 @@ const Drawable = struct {
             try verts.append(allocator, vert);
         }
 
-        var current_idx: u8 = 1;
+        var current_idx: Index_Type = 1;
         while (current_idx + 1 < verts.items.len) : (current_idx += 1) {
-            const idcs: [3]u8 = .{ 0, current_idx, current_idx + 1 };
+            const idcs: [3]Index_Type = .{ 0, current_idx, current_idx + 1 };
             try indices.appendSlice(allocator, &idcs);
         }
         drw.verts = try verts.toOwnedSlice(allocator);
@@ -488,7 +519,7 @@ const Drawable = struct {
             Vertex{ .position = .{ .data = .{ 1, 1, -1 } }, .color = .{ .data = .{ 0, 0, 1 } } }, // V7
         };
 
-        const indices = [_]u8{
+        const indices = [_]Index_Type{
             // Front Face
             0, 1, 2,
             0, 2, 3,
@@ -510,7 +541,7 @@ const Drawable = struct {
         };
 
         drw.verts = try allocator.dupe(Vertex, &vertices);
-        drw.indices = try allocator.dupe(u8, &indices);
+        drw.indices = try allocator.dupe(Index_Type, &indices);
         drw.index_start = null;
         return drw;
     }
@@ -531,7 +562,7 @@ const Drawable = struct {
         var new_obj: Drawable = .{ .index_start = null, .verts = undefined, .indices = undefined };
         const rotation_mat = rotation_from_euler_degrees(rot);
         new_obj.verts = try allocator.dupe(Vertex, drw.verts);
-        new_obj.indices = try allocator.dupe(u8, drw.indices);
+        new_obj.indices = try allocator.dupe(Index_Type, drw.indices);
         for (new_obj.verts) |*v| {
             const pos4 = zm.Vec4f{ .data = .{ v.position.data[0], v.position.data[1], v.position.data[2], 1.0 } };
             const rotated = rotation_mat.multiplyVec(pos4);
@@ -712,14 +743,13 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
         // zig fmt: on
     );
 
-    state.renderer = try Renderer.init(.{ .allocator = state.allocator, .program = program });
+    state.renderer = try Renderer.init(state.allocator, program);
 
     state.renderer.?.projection = .perspectiveRH(std.math.degreesToRadians(45.0), 16.0 / 9.0, NEAR, FAR);
     state.renderer.?.scaling = .scale(state.renderer.?.scaling, 1);
     state.renderer.?.cam.update(0, 0);
 
-    var quad: Drawable = try .gen_quad(allocator);
-    try state.renderer.?.queue(&quad);
+    var triangle_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.TRIANGLES, true);
 
     // var cube: Drawable = try .gen_cube(state.renderer.?.allocator);
     // try state.renderer.?.queue(&cube);
@@ -732,7 +762,7 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     plane.scale_assign(3);
     plane.move_to(.{ .data = .{ std.math.inf(f32), 0, std.math.inf(f32) } });
     plane.set_color(.{ .data = .{ 0.53, 0.53, 0.53 } });
-    try state.renderer.?.queue(&plane);
+    try triangle_batch.queue(&plane, state.renderer.?.allocator);
 
     //    var pyramid = try Drawable.gen_pyramid(allocator, 1, 2, 12);
     //    pyramid.scale_assign(0.2);
@@ -751,7 +781,9 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     // poly_4.move_by(.{ .data = .{ 2, 2, 1 } });
     // try state.renderer.?.queue(&poly_4);
 
-    try state.renderer.?.flush();
+    try triangle_batch.flush();
+    try state.renderer.?.batches.?.put("triangle____", triangle_batch);
+
     try errify(c.SDL_SetWindowRelativeMouseMode(state.window, true));
     return c.SDL_APP_CONTINUE;
 }
@@ -769,9 +801,6 @@ fn pre_draw(state: *State) !void {
 fn sdlAppIterate(state: *State) !c.SDL_AppResult {
     try pre_draw(state);
     if (state.renderer) |*renderer| {
-        for (state.renderer.?.drawables.?.items) |*drw| {
-            try renderer.update(drw);
-        }
         try renderer.draw();
     }
 
