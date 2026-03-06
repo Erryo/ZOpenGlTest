@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 .{
-    .name = .opengl_hexagon,
+    .name = .opengl_3d_engine,
     .version = "0.0.0",
-    .fingerprint = 0xa99055f8e756dd38,
+    .fingerprint = 0x20d660753bb8b9ba,
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .sdl = .{

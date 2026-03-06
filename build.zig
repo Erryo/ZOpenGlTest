@@ -47,7 +47,7 @@ pub fn build(b: *std.Build) void {
     // Build for desktop.
 
     const app_exe = b.addExecutable(.{
-        .name = "opengl_hexagon",
+        .name = "opengl_engine",
         .root_module = app_mod,
     });
 
