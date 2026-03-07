@@ -31,6 +31,11 @@ const gl_log = std.log.scoped(.gl);
 const Vertex_Shader_Path = "shaders/vertex_shader.glsl";
 const Fragment_Shader_Path = "shaders/fragment_shader.glsl";
 
+const SceneMode = enum(c_int) {
+    mother = 0,
+    sister = 1,
+};
+
 var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
 
 const deg2rad = std.math.degreesToRadians;
@@ -52,6 +57,7 @@ const State = struct {
 
     gl_ctx: c.SDL_GLContext,
     gl_procs: ?gl.ProcTable,
+    active_scene: SceneMode,
 
     const Config = struct {
         screen_w: c_int,
@@ -69,6 +75,7 @@ const State = struct {
             .screen_h = cfg.screen_h,
             .gl_ctx = null,
             .gl_procs = null,
+            .active_scene = .mother,
         };
         return state;
     }
@@ -117,8 +124,9 @@ const Renderer = struct {
         const resolution = [2]f32{ @floatFromInt(state.screen_w), @floatFromInt(state.screen_h) };
         gl.Uniform2fv(r.program.?.resolution_locaiton.?, 1, @ptrCast(&resolution));
 
-        const time: f32 = @floatFromInt(r.timer.read());
+        const time: f32 = @floatFromInt(r.timer.read()) * 0.000000001;
         gl.Uniform1f(r.program.?.time_location.?, time);
+        gl.Uniform1i(r.program.?.scene_location.?, @intFromEnum(state.active_scene));
         try check_gl_error();
 
         if (r.batches == null) return;
@@ -152,6 +160,7 @@ const Program = struct {
     matrix_location: ?c_int = null,
     resolution_locaiton: ?c_int = null,
     time_location: ?c_int = null,
+    scene_location: ?c_int = null,
 
     pub const Config = struct {
         vertex_src_path: []const u8,
@@ -169,6 +178,7 @@ const Program = struct {
         program.matrix_location = gl.GetUniformLocation(program.program.?, "u_Matrix");
         program.resolution_locaiton = gl.GetUniformLocation(program.program.?, "u_Resolution");
         program.time_location = gl.GetUniformLocation(program.program.?, "u_Time");
+        program.scene_location = gl.GetUniformLocation(program.program.?, "u_SceneMode");
         try check_gl_error();
         return program;
     }
@@ -765,6 +775,129 @@ fn compile_shader(shader_type: comptime_int, shader_source: []const u8) c_uint {
     }
     return shader_obj;
 }
+
+fn clear_batches(renderer: *Renderer) void {
+    var iterator = renderer.batches.?.iterator();
+    while (iterator.next()) |entry| {
+        entry.value_ptr.deinit(renderer.allocator);
+    }
+    renderer.batches.?.clearRetainingCapacity();
+}
+
+fn set_scene(state: *State, mode: SceneMode) !void {
+    if (state.active_scene == mode and state.renderer.?.batches.?.count() != 0) return;
+
+    if (state.renderer) |*renderer| {
+        clear_batches(renderer);
+    }
+    state.active_scene = mode;
+    if (mode == .mother) {
+        try build_mother_scene(state);
+    } else {
+        try build_sister_scene(state);
+    }
+}
+
+fn build_mother_scene(state: *State) !void {
+    var triangle_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.TRIANGLES, true);
+    errdefer triangle_batch.deinit(state.renderer.?.allocator);
+
+    {
+        var stem = try Drawable.gen_body(state.allocator, 0.12, 1.7, 10);
+        errdefer stem.deinit(state.allocator);
+        stem.set_color(.{ .data = .{ 0.18, 0.75, 0.25 } });
+        stem.rotate_assign(.{ .data = .{ 90, 0, 0 } });
+        stem.move_by(.{ .data = .{ 0, -0.6, 0 } });
+        try triangle_batch.queue(&stem, state.allocator);
+    }
+
+    {
+        var rose = try Drawable.gen_pyramid(state.allocator, 0.45, 0.65, 12);
+        errdefer rose.deinit(state.allocator);
+        rose.set_color(.{ .data = .{ 1.0, 0.45, 0.6 } });
+        rose.rotate_assign(.{ .data = .{ -90, 0, 0 } });
+        rose.move_by(.{ .data = .{ 0, 1.0, 0 } });
+        try triangle_batch.queue(&rose, state.allocator);
+    }
+
+    {
+        var bloom = try Drawable.gen_polygon(state.allocator, 0.9, 18);
+        errdefer bloom.deinit(state.allocator);
+        bloom.set_color(.{ .data = .{ 1.0, 0.78, 0.35 } });
+        bloom.rotate_assign(.{ .data = .{ 90, 0, 0 } });
+        bloom.move_by(.{ .data = .{ 0, 1.0, -0.05 } });
+        try triangle_batch.queue(&bloom, state.allocator);
+    }
+
+    try triangle_batch.flush();
+    try state.renderer.?.batches.?.put("triangle____", triangle_batch);
+
+    var line_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.LINES, false);
+    errdefer line_batch.deinit(state.renderer.?.allocator);
+
+    var grid = try Drawable.gen_grid(state.allocator, .{ .data = .{ -8, -1.2, -8 } }, .{ .data = .{ 8, -1.2, 8 } }, 1);
+    errdefer grid.deinit(state.allocator);
+    grid.set_color(.{ .data = .{ 0.55, 0.45, 0.45 } });
+    try line_batch.queue(&grid, state.allocator);
+
+    try line_batch.flush();
+    try state.renderer.?.batches.?.put("lines_______", line_batch);
+}
+
+fn build_sister_scene(state: *State) !void {
+    var triangle_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.TRIANGLES, true);
+    errdefer triangle_batch.deinit(state.renderer.?.allocator);
+
+    {
+        var star_core = try Drawable.gen_pyramid(state.allocator, 0.5, 0.9, 6);
+        errdefer star_core.deinit(state.allocator);
+        star_core.set_color(.{ .data = .{ 0.45, 0.75, 1.0 } });
+        star_core.rotate_assign(.{ .data = .{ -90, 0, 0 } });
+        try triangle_batch.queue(&star_core, state.allocator);
+    }
+
+    {
+        var ring = try Drawable.gen_body(state.allocator, 2.2, 0.25, 20);
+        errdefer ring.deinit(state.allocator);
+        ring.set_color(.{ .data = .{ 0.9, 0.4, 1.0 } });
+        ring.rotate_assign(.{ .data = .{ 90, 0, 0 } });
+        ring.move_by(.{ .data = .{ 0, 0.5, 0 } });
+        try triangle_batch.queue(&ring, state.allocator);
+    }
+
+    {
+        var accent = try Drawable.gen_cube(state.allocator);
+        errdefer accent.deinit(state.allocator);
+        accent.scale_assign(0.5);
+        accent.set_color(.{ .data = .{ 0.25, 0.95, 0.95 } });
+        accent.move_by(.{ .data = .{ -1.5, -0.8, 1.2 } });
+        try triangle_batch.queue(&accent, state.allocator);
+    }
+
+    {
+        var accent_2 = try Drawable.gen_cube(state.allocator);
+        errdefer accent_2.deinit(state.allocator);
+        accent_2.scale_assign(0.35);
+        accent_2.set_color(.{ .data = .{ 0.9, 0.45, 1.0 } });
+        accent_2.move_by(.{ .data = .{ 1.6, 1.0, -1.0 } });
+        try triangle_batch.queue(&accent_2, state.allocator);
+    }
+
+    try triangle_batch.flush();
+    try state.renderer.?.batches.?.put("triangle____", triangle_batch);
+
+    var line_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.LINES, false);
+    errdefer line_batch.deinit(state.renderer.?.allocator);
+
+    var orbit = try Drawable.gen_grid(state.allocator, .{ .data = .{ -9, -1.6, -9 } }, .{ .data = .{ 9, -1.6, 9 } }, 1.5);
+    errdefer orbit.deinit(state.allocator);
+    orbit.set_color(.{ .data = .{ 0.25, 0.3, 0.65 } });
+    try line_batch.queue(&orbit, state.allocator);
+
+    try line_batch.flush();
+    try state.renderer.?.batches.?.put("lines_______", line_batch);
+}
+
 fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     _ = argv;
 
@@ -833,51 +966,10 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 
     state.renderer.?.projection = .perspectiveRH(std.math.degreesToRadians(45.0), 16.0 / 9.0, NEAR, FAR);
     state.renderer.?.scaling = .scale(state.renderer.?.scaling, 1);
+    state.renderer.?.cam.from = .{ .data = .{ 0, 0.6, 7.5 } };
     state.renderer.?.cam.update(0, 0);
 
-    {
-        var triangle_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.TRIANGLES, true);
-        errdefer triangle_batch.deinit(state.renderer.?.allocator);
-
-        {
-            var cube: Drawable = try .gen_cube(state.renderer.?.allocator);
-            errdefer cube.deinit(state.renderer.?.allocator);
-
-            try triangle_batch.queue(&cube, state.renderer.?.allocator);
-        }
-
-        {
-            var cube_2: Drawable = try .gen_cube(state.renderer.?.allocator);
-            errdefer cube_2.deinit(state.renderer.?.allocator);
-            cube_2.move_by(.{ .data = .{ 2, 2, 1 } });
-            try triangle_batch.queue(&cube_2, state.renderer.?.allocator);
-        }
-
-        {
-            var pyramid = try Drawable.gen_pyramid(allocator, 1, 2, 12);
-            errdefer pyramid.deinit(state.renderer.?.allocator);
-
-            pyramid.scale_assign(0.2);
-            pyramid.move_by(.{ .data = .{ -5, 0, 2 } });
-            try triangle_batch.queue(&pyramid, state.renderer.?.allocator);
-        }
-
-        try triangle_batch.flush();
-        try state.renderer.?.batches.?.put("triangle____", triangle_batch);
-    }
-
-    {
-        var line_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.LINES, false);
-        errdefer line_batch.deinit(state.renderer.?.allocator);
-
-        var grid = try Drawable.gen_grid(allocator, .{ .data = .{ -10, 0, -10 } }, .{ .data = .{ 10, 0, 10 } }, 1);
-        errdefer grid.deinit(state.renderer.?.allocator);
-
-        try line_batch.queue(&grid, allocator);
-
-        try line_batch.flush();
-        try state.renderer.?.batches.?.put("lines_______", line_batch);
-    }
+    try set_scene(state, .mother);
     try errify(c.SDL_SetWindowRelativeMouseMode(state.window, true));
     return c.SDL_APP_CONTINUE;
 }
@@ -888,7 +980,11 @@ fn pre_draw(state: *State) !void {
     gl.Disable(gl.CULL_FACE);
     gl.Viewport(0, 0, state.screen_w, state.screen_h);
 
-    gl.ClearColor(0.1, 0.1, 0.1, 1);
+    if (state.active_scene == .mother) {
+        gl.ClearColor(0.17, 0.08, 0.12, 1);
+    } else {
+        gl.ClearColor(0.03, 0.04, 0.1, 1);
+    }
     gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 }
 
@@ -953,6 +1049,14 @@ fn sdlAppEvent(state: *State, event: *c.SDL_Event) !c.SDL_AppResult {
         }
         if (keyboard[c.SDL_SCANCODE_RIGHT]) {
             state.renderer.?.cam.update(10, 0);
+        }
+
+        if (event.type == c.SDL_EVENT_KEY_DOWN and event.key.scancode == c.SDL_SCANCODE_1 and state.active_scene != .mother) {
+            try set_scene(state, .mother);
+        }
+
+        if (event.type == c.SDL_EVENT_KEY_DOWN and event.key.scancode == c.SDL_SCANCODE_2 and state.active_scene != .sister) {
+            try set_scene(state, .sister);
         }
 
         state.renderer.?.cam.move(delta);
