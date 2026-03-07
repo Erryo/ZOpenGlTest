@@ -76,6 +76,7 @@ const State = struct {
 
 const RenderError = error{
     AlreadyFlushed,
+    AlreadyQueued,
 };
 
 const Renderer = struct {
@@ -138,7 +139,7 @@ const Renderer = struct {
             var iterator = r.batches.?.iterator();
             while (iterator.next()) |entry| {
                 std.debug.print("destroying batch: key:{s}\n", .{entry.key_ptr.*});
-                try entry.value_ptr.deinit(r.allocator);
+                entry.value_ptr.deinit(r.allocator);
             }
             r.batches.?.deinit();
         }
@@ -251,8 +252,10 @@ const Batch = struct {
     }
 
     pub fn queue(b: *Batch, drw: *Drawable, allocator: Allocator) !void {
+        if (drw.index_start != null) return RenderError.AlreadyQueued;
+
         drw.index_start = b.no_verts;
-        defer b.no_verts += @intCast(drw.verts.len);
+        defer b.no_verts += @intCast(drw.verts.?.len);
 
         if (b.indices) |*indices| {
             for (drw.indices.?) |*idx| {
@@ -262,7 +265,7 @@ const Batch = struct {
         } else if (drw.indices != null and drw.indices.?.len != 0) std.debug.print("received indexed object for non indexed draw\n", .{});
 
         try b.drawables.?.append(allocator, drw.*);
-        try b.verts.?.appendSlice(allocator, drw.verts);
+        try b.verts.?.appendSlice(allocator, drw.verts.?);
     }
     pub fn flush(b: *Batch) !void {
         if (b.flushed) return RenderError.AlreadyFlushed;
@@ -299,7 +302,7 @@ const Batch = struct {
         }
     }
 
-    pub fn deinit(b: *Batch, allocator: Allocator) !void {
+    pub fn deinit(b: *Batch, allocator: Allocator) void {
         if (b.vao != null)
             gl.DeleteVertexArrays(1, (&b.vbo.?)[0..1]);
         b.vao = null;
@@ -320,10 +323,7 @@ const Batch = struct {
 
         if (b.drawables != null) {
             for (b.drawables.?.items) |*drw| {
-                allocator.free(drw.verts);
-                if (drw.indices != null) {
-                    allocator.free(drw.indices.?);
-                }
+                drw.deinit(allocator);
             }
             b.drawables.?.deinit(allocator);
         }
@@ -392,9 +392,20 @@ const Camera = struct {
 };
 
 const Drawable = struct {
-    verts: []Vertex,
+    verts: ?[]Vertex,
     indices: ?[]Index_Type,
     index_start: ?usize,
+
+    pub fn deinit(drw: *Drawable, allocator: Allocator) void {
+        if (drw.verts != null) {
+            allocator.free(drw.verts.?);
+        }
+        drw.verts = null;
+        if (drw.indices != null) {
+            allocator.free(drw.indices.?);
+        }
+        drw.indices = null;
+    }
 
     // from < to
     pub fn gen_grid(allocator: Allocator, from: zm.Vec3f, to: zm.Vec3f, spacing: f32) !Drawable {
@@ -474,11 +485,11 @@ const Drawable = struct {
         var indices = try ByteList.initCapacity(allocator, (no_sides + 1) * 2);
 
         const base: Drawable = try .gen_polygon(allocator, side_len, no_sides);
-        defer allocator.free(base.verts);
+        defer allocator.free(base.verts.?);
         if (base.indices == null) @panic("indices == null");
         defer allocator.free(base.indices.?);
 
-        try verts.appendSlice(allocator, base.verts);
+        try verts.appendSlice(allocator, base.verts.?);
         try indices.appendSlice(allocator, base.indices.?);
 
         try verts.append(allocator, Vertex{
@@ -488,7 +499,7 @@ const Drawable = struct {
         const point_idx: Index_Type = @as(Index_Type, @intCast(verts.items.len)) - 1;
 
         var current_idx: Index_Type = 1;
-        while (current_idx + 1 < base.verts.len) : (current_idx += 1) {
+        while (current_idx + 1 < base.verts.?.len) : (current_idx += 1) {
             const idcs: [3]Index_Type = .{ point_idx, current_idx, current_idx + 1 };
             try indices.appendSlice(allocator, &idcs);
         }
@@ -505,31 +516,31 @@ const Drawable = struct {
         var indices = try ByteList.initCapacity(allocator, (no_sides + 1) * 2);
 
         const top_face: Drawable = try .gen_polygon(allocator, side_len, no_sides);
-        defer allocator.free(top_face.verts);
+        defer allocator.free(top_face.verts.?);
         defer allocator.free(top_face.indices.?);
         if (top_face.indices == null) @panic("indices == null");
 
         var bottom_face: Drawable = try .gen_polygon(allocator, side_len, no_sides);
-        defer allocator.free(bottom_face.verts);
+        defer allocator.free(bottom_face.verts.?);
         defer allocator.free(bottom_face.indices.?);
         bottom_face.move_by(.{ .data = .{ 0, 0, -height } });
 
-        const offset: Index_Type = @intCast(top_face.verts.len);
+        const offset: Index_Type = @intCast(top_face.verts.?.len);
         for (bottom_face.indices.?) |*idx| {
             idx.* += offset;
         }
-        for (bottom_face.verts) |*v| {
+        for (bottom_face.verts.?) |*v| {
             v.color = .{ .data = .{ 1, 0, 0 } };
         }
 
-        try verts.appendSlice(allocator, top_face.verts);
+        try verts.appendSlice(allocator, top_face.verts.?);
         try indices.appendSlice(allocator, top_face.indices.?);
 
-        try verts.appendSlice(allocator, bottom_face.verts);
+        try verts.appendSlice(allocator, bottom_face.verts.?);
         try indices.appendSlice(allocator, bottom_face.indices.?);
 
         var current_idx: Index_Type = 1;
-        while (current_idx + 1 < top_face.verts.len) : (current_idx += 1) {
+        while (current_idx + 1 < top_face.verts.?.len) : (current_idx += 1) {
             const idcs: [3]Index_Type = .{ current_idx, current_idx + offset, current_idx + offset + 1 };
             try indices.appendSlice(allocator, &idcs);
             const idcs_2: [3]Index_Type = .{ current_idx, current_idx + offset + 1, current_idx + 1 };
@@ -636,9 +647,9 @@ const Drawable = struct {
     pub fn rotate(drw: Drawable, rot: zm.Vec3f, allocator: Allocator) !Drawable {
         var new_obj: Drawable = .{ .index_start = null, .verts = undefined, .indices = null };
         const rotation_mat = rotation_from_euler_degrees(rot);
-        new_obj.verts = try allocator.dupe(Vertex, drw.verts);
+        new_obj.verts = try allocator.dupe(Vertex, drw.verts.?);
         new_obj.indices = try allocator.dupe(Index_Type, drw.indices.?);
-        for (new_obj.verts) |*v| {
+        for (new_obj.verts.?) |*v| {
             const pos4 = zm.Vec4f{ .data = .{ v.position.data[0], v.position.data[1], v.position.data[2], 1.0 } };
             const rotated = rotation_mat.multiplyVec(pos4);
             v.position = zm.Vec3f{ .data = .{ rotated.data[0], rotated.data[1], rotated.data[2] } };
@@ -648,7 +659,7 @@ const Drawable = struct {
 
     pub fn rotate_assign(drw: *Drawable, rot: zm.Vec3f) void {
         const rotation_mat = rotation_from_euler_degrees(rot);
-        for (drw.verts) |*v| {
+        for (drw.verts.?) |*v| {
             const pos4 = zm.Vec4f{ .data = .{ v.position.data[0], v.position.data[1], v.position.data[2], 1.0 } };
             const rotated = rotation_mat.multiplyVec(pos4);
             v.position = zm.Vec3f{ .data = .{ rotated.data[0], rotated.data[1], rotated.data[2] } };
@@ -656,19 +667,19 @@ const Drawable = struct {
     }
 
     pub fn scale_assign(drw: *Drawable, scaler: f32) void {
-        for (drw.verts) |*vert| {
+        for (drw.verts.?) |*vert| {
             vert.*.position.scaleAssign(scaler);
         }
     }
 
     pub fn set_color(drw: *Drawable, color: zm.Vec3f) void {
-        for (drw.verts) |*vert| {
+        for (drw.verts.?) |*vert| {
             vert.color = color;
         }
     }
 
     pub fn move_to(drw: *Drawable, axis: zm.Vec3f) void {
-        for (drw.verts) |*vert| {
+        for (drw.verts.?) |*vert| {
             if (axis.data[0] != std.math.inf(f32))
                 vert.*.position.data[0] = axis.data[0];
             if (axis.data[1] != std.math.inf(f32))
@@ -678,7 +689,7 @@ const Drawable = struct {
         }
     }
     pub fn move_by(drw: *Drawable, target: zm.Vec3f) void {
-        for (drw.verts) |*vert| {
+        for (drw.verts.?) |*vert| {
             vert.*.position.addAssign(target);
         }
     }
@@ -824,46 +835,49 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     state.renderer.?.scaling = .scale(state.renderer.?.scaling, 1);
     state.renderer.?.cam.update(0, 0);
 
-    var triangle_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.TRIANGLES, true);
+    {
+        var triangle_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.TRIANGLES, true);
+        errdefer triangle_batch.deinit(state.renderer.?.allocator);
 
-    var cube: Drawable = try .gen_cube(state.renderer.?.allocator);
-    // try state.renderer.?.queue(&cube);
-    var cube_2: Drawable = try .gen_cube(state.renderer.?.allocator);
-    cube_2.move_by(.{ .data = .{ 2, 2, 1 } });
-    // try state.renderer.?.queue(&cube_2);
+        {
+            var cube: Drawable = try .gen_cube(state.renderer.?.allocator);
+            errdefer cube.deinit(state.renderer.?.allocator);
 
-    try triangle_batch.queue(&cube, state.renderer.?.allocator);
-    try triangle_batch.queue(&cube_2, state.renderer.?.allocator);
+            try triangle_batch.queue(&cube, state.renderer.?.allocator);
+        }
 
-    var pyramid = try Drawable.gen_pyramid(allocator, 1, 2, 12);
-    pyramid.scale_assign(0.2);
-    pyramid.move_by(.{ .data = .{ -5, 0, 2 } });
-    //    pyramid.move_to(.{ .data = .{ 4, std.math.inf(f32), std.math.inf(f32) } });
-    try triangle_batch.queue(&pyramid, state.renderer.?.allocator);
-    //
-    //    try state.renderer.?.queue(&pyramid);
-    //    var cylinder: Drawable = try .gen_body(allocator, 1, 3, 20);
-    //    try state.renderer.?.queue(&cylinder);
-    //
-    //    var cube: Drawable = try .gen_body(allocator, 1, 2, 4);
-    //    cube.move_by(.{ .data = .{ 3, 0, 1 } });
-    //    try state.renderer.?.queue(&cube);
-    //    // var poly_12: Drawable = try Drawable.gen_polygon(state.renderer.?.allocator, 1, 12);
-    // try state.renderer.?.queue(&poly_12);
+        {
+            var cube_2: Drawable = try .gen_cube(state.renderer.?.allocator);
+            errdefer cube_2.deinit(state.renderer.?.allocator);
+            cube_2.move_by(.{ .data = .{ 2, 2, 1 } });
+            try triangle_batch.queue(&cube_2, state.renderer.?.allocator);
+        }
 
-    // var poly_4: Drawable = try Drawable.gen_polygon(state.renderer.?.allocator, 1, 4);
-    // poly_4.move_by(.{ .data = .{ 2, 2, 1 } });
-    // try state.renderer.?.queue(&poly_4);
+        {
+            var pyramid = try Drawable.gen_pyramid(allocator, 1, 2, 12);
+            errdefer pyramid.deinit(state.renderer.?.allocator);
 
-    try triangle_batch.flush();
-    try state.renderer.?.batches.?.put("triangle____", triangle_batch);
-    //
-    var line_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.LINES, false);
-    var grid = try Drawable.gen_grid(allocator, .{ .data = .{ -10, 0, -10 } }, .{ .data = .{ 10, 0, 10 } }, 1);
-    try line_batch.queue(&grid, allocator);
-    try line_batch.flush();
-    try state.renderer.?.batches.?.put("lines_______", line_batch);
+            pyramid.scale_assign(0.2);
+            pyramid.move_by(.{ .data = .{ -5, 0, 2 } });
+            try triangle_batch.queue(&pyramid, state.renderer.?.allocator);
+        }
 
+        try triangle_batch.flush();
+        try state.renderer.?.batches.?.put("triangle____", triangle_batch);
+    }
+
+    {
+        var line_batch = try Batch.init(state.renderer.?.program.?, state.renderer.?.allocator, gl.LINES, false);
+        errdefer line_batch.deinit(state.renderer.?.allocator);
+
+        var grid = try Drawable.gen_grid(allocator, .{ .data = .{ -10, 0, -10 } }, .{ .data = .{ 10, 0, 10 } }, 1);
+        errdefer grid.deinit(state.renderer.?.allocator);
+
+        try line_batch.queue(&grid, allocator);
+
+        try line_batch.flush();
+        try state.renderer.?.batches.?.put("lines_______", line_batch);
+    }
     try errify(c.SDL_SetWindowRelativeMouseMode(state.window, true));
     return c.SDL_APP_CONTINUE;
 }
@@ -910,8 +924,6 @@ fn sdlAppEvent(state: *State, event: *c.SDL_Event) !c.SDL_AppResult {
         _ = c.SDL_GetRelativeMouseState(&m_x, &m_y);
 
         state.renderer.?.cam.update(m_x, m_y);
-        std.debug.print("rotation:{any}\n", .{state.renderer.?.cam.rotation});
-        std.debug.print("cam.to:{any}\n", .{state.renderer.?.cam.to});
     }
 
     if (event.type == c.SDL_EVENT_KEY_DOWN or event.type == c.SDL_EVENT_KEY_UP) {
@@ -944,7 +956,6 @@ fn sdlAppEvent(state: *State, event: *c.SDL_Event) !c.SDL_AppResult {
         }
 
         state.renderer.?.cam.move(delta);
-        std.debug.print("position:{any}\n", .{state.renderer.?.cam.from});
     }
     return c.SDL_APP_CONTINUE;
 }
