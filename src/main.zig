@@ -81,6 +81,7 @@ const RenderError = error{
 const Renderer = struct {
     program: ?Program = null,
     batches: ?BatchMap = null,
+    timer: std.time.Timer,
 
     cam: Camera = .{},
     matrix: zm.Mat4f = .identity(),
@@ -90,13 +91,16 @@ const Renderer = struct {
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, program: Program) !Renderer {
-        var r: Renderer = .{ .allocator = allocator };
+        var r: Renderer = .{
+            .allocator = allocator,
+            .timer = try .start(),
+        };
         r.batches = BatchMap.init(r.allocator);
         r.program = program;
         return r;
     }
 
-    pub fn draw(r: *Renderer) !void {
+    pub fn draw(r: *Renderer, state: *State) !void {
         try check_gl_error();
         gl.UseProgram(r.program.?.program.?);
 
@@ -109,6 +113,11 @@ const Renderer = struct {
         gl.UniformMatrix4fv(r.program.?.matrix_location.?, 1, gl.TRUE, flat);
         r.matrix = .identity();
 
+        const resolution = [2]f32{ @floatFromInt(state.screen_w), @floatFromInt(state.screen_h) };
+        gl.Uniform2fv(r.program.?.resolution_locaiton.?, 1, @ptrCast(&resolution));
+
+        const time: f32 = @floatFromInt(r.timer.read());
+        gl.Uniform1f(r.program.?.time_location.?, time);
         try check_gl_error();
 
         if (r.batches == null) return;
@@ -140,6 +149,8 @@ const Renderer = struct {
 const Program = struct {
     program: ?c_uint = null,
     matrix_location: ?c_int = null,
+    resolution_locaiton: ?c_int = null,
+    time_location: ?c_int = null,
 
     pub const Config = struct {
         vertex_src_path: []const u8,
@@ -155,6 +166,8 @@ const Program = struct {
         defer allocator.free(fragment_glsl_src);
         program.program = try create_graphics_pipeline(vertex_glsl_src, fragment_glsl_src);
         program.matrix_location = gl.GetUniformLocation(program.program.?, "u_Matrix");
+        program.resolution_locaiton = gl.GetUniformLocation(program.program.?, "u_Resolution");
+        program.time_location = gl.GetUniformLocation(program.program.?, "u_Time");
         try check_gl_error();
         return program;
     }
@@ -460,13 +473,13 @@ const Drawable = struct {
         var verts = try VertexList.initCapacity(allocator, no_sides + 1);
         var indices = try ByteList.initCapacity(allocator, (no_sides + 1) * 2);
 
-        const top_face: Drawable = try .gen_polygon(allocator, side_len, no_sides);
-        defer allocator.free(top_face.verts);
-        if (top_face.indices == null) @panic("indices == null");
-        defer allocator.free(top_face.indices.?);
+        const base: Drawable = try .gen_polygon(allocator, side_len, no_sides);
+        defer allocator.free(base.verts);
+        if (base.indices == null) @panic("indices == null");
+        defer allocator.free(base.indices.?);
 
-        try verts.appendSlice(allocator, top_face.verts);
-        try indices.appendSlice(allocator, top_face.indices.?);
+        try verts.appendSlice(allocator, base.verts);
+        try indices.appendSlice(allocator, base.indices.?);
 
         try verts.append(allocator, Vertex{
             .color = .{ .data = .{ 1, 0, 0 } },
@@ -475,7 +488,7 @@ const Drawable = struct {
         const point_idx: Index_Type = @as(Index_Type, @intCast(verts.items.len)) - 1;
 
         var current_idx: Index_Type = 1;
-        while (current_idx + 1 < top_face.verts.len) : (current_idx += 1) {
+        while (current_idx + 1 < base.verts.len) : (current_idx += 1) {
             const idcs: [3]Index_Type = .{ point_idx, current_idx, current_idx + 1 };
             try indices.appendSlice(allocator, &idcs);
         }
@@ -554,9 +567,10 @@ const Drawable = struct {
 
         var current_idx: Index_Type = 1;
         while (current_idx + 1 < verts.items.len) : (current_idx += 1) {
-            const idcs: [3]Index_Type = .{ 0, current_idx, current_idx + 1 };
+            const idcs: [3]Index_Type = .{ current_idx, 0, current_idx + 1 };
             try indices.appendSlice(allocator, &idcs);
         }
+
         drw.verts = try verts.toOwnedSlice(allocator);
         defer verts.deinit(allocator);
         drw.indices = try indices.toOwnedSlice(allocator);
@@ -588,14 +602,14 @@ const Drawable = struct {
             3, 2, 6,
             3, 6, 7,
             // Left Face
-            0, 1, 5,
-            0, 5, 4,
+            1, 0, 5,
+            5, 0, 4,
             // Back Face
-            4, 5, 6,
-            4, 6, 7,
+            5, 4, 6,
+            6, 4, 7,
             // Down Face
-            5, 1, 2,
-            5, 2, 6,
+            1, 5, 2,
+            2, 5, 6,
             // Up Face
             4, 0, 3,
             4, 3, 7,
@@ -867,7 +881,7 @@ fn pre_draw(state: *State) !void {
 fn sdlAppIterate(state: *State) !c.SDL_AppResult {
     try pre_draw(state);
     if (state.renderer) |*renderer| {
-        try renderer.draw();
+        try renderer.draw(state);
     }
 
     try errify(c.SDL_GL_SwapWindow(state.window.?));
