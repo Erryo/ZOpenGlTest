@@ -13,10 +13,10 @@ void main()
   uv *= 2;
   uv = fract(uv);
   uv -= 0.5;
-  float d = length(uv); 
-  float milli =  u_Time*0.000000001;
+  float d = length(uv*2.4); 
+  float milli =  u_Time*0.0000000015;
 
-  d = sin(d*8.0+milli)/8.0;
+  d = sin(d*10.0+milli)/5.0;
   d = abs(d);
   d = smoothstep(0.0,0.1, d);
   f_Color = vec4(d,d*2,d*2,1);

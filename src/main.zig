@@ -48,6 +48,7 @@ const State = struct {
     window: ?*c.SDL_Window,
     screen_w: c_int,
     screen_h: c_int,
+    face_culling: bool = true,
 
     allocator: std.mem.Allocator,
     renderer: ?Renderer,
@@ -138,14 +139,14 @@ const Renderer = struct {
     pub fn deinit(r: *Renderer) !void {
         if (r.program_list != null) {
             for (r.program_list.?.items) |*prog| {
-                try prog.deinit();
+                prog.deinit();
             }
             r.program_list.?.deinit(r.allocator);
             r.program_list = null;
         }
 
         if (r.program != null) {
-            try r.program.?.deinit();
+            r.program.?.deinit();
         }
         r.program = null;
 
@@ -166,18 +167,18 @@ const Program = struct {
     matrix_location: ?c_int = null,
     resolution_locaiton: ?c_int = null,
     time_location: ?c_int = null,
+    vertex_shader_path: []const u8,
+    fragment_shader_path: []const u8,
 
-    pub const Config = struct {
-        vertex_src_path: []const u8,
-        fragment_src_path: []const u8,
-    };
+    pub fn init(allocator: Allocator, vertex_src_path: []const u8, fragment_src_path: []const u8) !Program {
+        var program = Program{
+            .vertex_shader_path = vertex_src_path,
+            .fragment_shader_path = fragment_src_path,
+        };
 
-    pub fn init(allocator: Allocator, cfg: Config) !Program {
-        var program = Program{};
-
-        const vertex_glsl_src = try read_in_shader(allocator, cfg.vertex_src_path);
+        const vertex_glsl_src = try read_in_shader(allocator, vertex_src_path);
         defer allocator.free(vertex_glsl_src);
-        const fragment_glsl_src = try read_in_shader(allocator, cfg.fragment_src_path);
+        const fragment_glsl_src = try read_in_shader(allocator, fragment_src_path);
         defer allocator.free(fragment_glsl_src);
         program.program = try create_graphics_pipeline(vertex_glsl_src, fragment_glsl_src);
         program.matrix_location = gl.GetUniformLocation(program.program.?, "u_Matrix");
@@ -187,7 +188,15 @@ const Program = struct {
         return program;
     }
 
-    pub fn deinit(p: *Program) !void {
+    pub fn update(p: *Program, allocator: Allocator) !void {
+        const vs_src = p.vertex_shader_path;
+        const fs_src = p.fragment_shader_path;
+        p.deinit();
+
+        p.* = try Program.init(allocator, vs_src, fs_src);
+    }
+
+    pub fn deinit(p: *Program) void {
         if (p.program != null)
             gl.DeleteProgram(p.program.?);
         p.program = null;
@@ -894,18 +903,8 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     //
     //
 
-    const program: Program = try .init(state.allocator, Program.Config{
-        // zig fmt: off
-        .fragment_src_path = Fragment_Shader_Path,
-        .vertex_src_path = Vertex_Shader_Path }
-        // zig fmt: on
-    );
-    const program_2: Program = try .init(state.allocator, Program.Config{
-        // zig fmt: off
-     .fragment_src_path = Circle_Fragment_Shader_Path,
-     .vertex_src_path = Vertex_Shader_Path }
-     // zig fmt: on
-    );
+    const program: Program = try .init(state.allocator, Vertex_Shader_Path, Fragment_Shader_Path);
+    const program_2: Program = try .init(state.allocator, Vertex_Shader_Path, Circle_Fragment_Shader_Path);
 
     state.renderer = try Renderer.init(state.allocator, program);
     try state.renderer.?.program_list.?.append(state.renderer.?.allocator, program_2);
@@ -964,7 +963,11 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 fn pre_draw(state: *State) !void {
     try check_gl_error();
     gl.Enable(gl.DEPTH_TEST);
-    gl.Enable(gl.CULL_FACE);
+    if (state.face_culling) {
+        gl.Enable(gl.CULL_FACE);
+    } else {
+        gl.Disable(gl.CULL_FACE);
+    }
     gl.Viewport(0, 0, state.screen_w, state.screen_h);
 
     gl.ClearColor(0.1, 0.1, 0.1, 1);
@@ -1034,6 +1037,16 @@ fn sdlAppEvent(state: *State, event: *c.SDL_Event) !c.SDL_AppResult {
             state.renderer.?.cam.update(10, 0);
         }
 
+        if (keyboard[c.SDL_SCANCODE_R]) {
+            for (state.renderer.?.program_list.?.items) |*prog| {
+                try prog.update(state.renderer.?.allocator);
+            }
+            try state.renderer.?.program.?.update(state.renderer.?.allocator);
+        }
+
+        if (keyboard[c.SDL_SCANCODE_E]) {
+            state.face_culling = !state.face_culling;
+        }
         if (keyboard[c.SDL_SCANCODE_1]) {
             state.renderer.?.program = state.renderer.?.program_list.?.items[0];
             state.renderer.?.program_idx = 0;
@@ -1065,7 +1078,7 @@ fn sdlAppQuit(state: *State, result: anyerror!c.SDL_AppResult) void {
 
     if (state.renderer != null) {
         if (state.renderer.?.program != null)
-            try state.renderer.?.program.?.deinit();
+            state.renderer.?.program.?.deinit();
         try state.renderer.?.deinit();
     }
     if (state.gl_procs != null)
