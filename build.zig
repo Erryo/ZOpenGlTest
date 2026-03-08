@@ -25,6 +25,9 @@ pub fn build(b: *std.Build) void {
     });
     app_mod.addImport("zm", zm.module("zm"));
 
+    const zstbi = b.dependency("zstbi", .{});
+    app_mod.addImport("zstbi", zstbi.module("root"));
+
     const sdl_dep = b.dependency("sdl", .{
         .target = target,
         .optimize = optimize,

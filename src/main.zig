@@ -9,7 +9,7 @@ const c = @cImport({
     @cInclude("SDL3/SDL_main.h");
 });
 const zm = @import("zm");
-const rand = std.crypto.random;
+const zstbi = @import("zstbi");
 
 const target_triple: [:0]const u8 = x: {
     var buf: [256]u8 = undefined;
@@ -30,6 +30,7 @@ const gl_log = std.log.scoped(.gl);
 
 const Vertex_Shader_Path = "shaders/vertex_shader.glsl";
 const Fragment_Shader_Path = "shaders/fragment_shader.glsl";
+const Circle_Fragment_Shader_Path = "shaders/circle_fragment_shader.glsl";
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
 
@@ -39,6 +40,7 @@ var Perspective_Mat_idx: usize = 0;
 const VertexList = std.ArrayList(Vertex);
 const DrawableList = std.ArrayList(Drawable);
 const ByteList = std.ArrayList(Index_Type);
+const ProgramList = std.ArrayList(Program);
 const BatchMap = std.AutoHashMap(*const [12:0]u8, Batch);
 const Index_Type = u32;
 
@@ -80,6 +82,8 @@ const RenderError = error{
 };
 
 const Renderer = struct {
+    program_list: ?ProgramList = null,
+    program_idx: usize = 0,
     program: ?Program = null,
     batches: ?BatchMap = null,
     timer: std.time.Timer,
@@ -98,6 +102,8 @@ const Renderer = struct {
         };
         r.batches = BatchMap.init(r.allocator);
         r.program = program;
+        r.program_list = try ProgramList.initCapacity(r.allocator, 1);
+        try r.program_list.?.append(r.allocator, r.program.?);
         return r;
     }
 
@@ -130,6 +136,14 @@ const Renderer = struct {
     }
 
     pub fn deinit(r: *Renderer) !void {
+        if (r.program_list != null) {
+            for (r.program_list.?.items) |*prog| {
+                try prog.deinit();
+            }
+            r.program_list.?.deinit(r.allocator);
+            r.program_list = null;
+        }
+
         if (r.program != null) {
             try r.program.?.deinit();
         }
@@ -177,6 +191,9 @@ const Program = struct {
         if (p.program != null)
             gl.DeleteProgram(p.program.?);
         p.program = null;
+        p.matrix_location = null;
+        p.resolution_locaiton = null;
+        p.time_location = null;
     }
 };
 
@@ -872,14 +889,26 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
     gl_log.info("Version:{s}", .{gl.GetString(gl.VERSION) orelse "null"});
     gl_log.info("Shading language:{s}", .{gl.GetString(gl.SHADING_LANGUAGE_VERSION) orelse "null"});
 
+    // texture stuff
+    zstbi.init(state.allocator);
+    //
+    //
+
     const program: Program = try .init(state.allocator, Program.Config{
         // zig fmt: off
         .fragment_src_path = Fragment_Shader_Path,
         .vertex_src_path = Vertex_Shader_Path }
         // zig fmt: on
     );
+    const program_2: Program = try .init(state.allocator, Program.Config{
+        // zig fmt: off
+     .fragment_src_path = Circle_Fragment_Shader_Path,
+     .vertex_src_path = Vertex_Shader_Path }
+     // zig fmt: on
+    );
 
     state.renderer = try Renderer.init(state.allocator, program);
+    try state.renderer.?.program_list.?.append(state.renderer.?.allocator, program_2);
 
     state.renderer.?.projection = .perspectiveRH(std.math.degreesToRadians(45.0), 16.0 / 9.0, NEAR, FAR);
     state.renderer.?.scaling = .scale(state.renderer.?.scaling, 1);
@@ -935,7 +964,7 @@ fn sdlAppInit(appstate: *?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
 fn pre_draw(state: *State) !void {
     try check_gl_error();
     gl.Enable(gl.DEPTH_TEST);
-    gl.Disable(gl.CULL_FACE);
+    gl.Enable(gl.CULL_FACE);
     gl.Viewport(0, 0, state.screen_w, state.screen_h);
 
     gl.ClearColor(0.1, 0.1, 0.1, 1);
@@ -1005,6 +1034,19 @@ fn sdlAppEvent(state: *State, event: *c.SDL_Event) !c.SDL_AppResult {
             state.renderer.?.cam.update(10, 0);
         }
 
+        if (keyboard[c.SDL_SCANCODE_1]) {
+            state.renderer.?.program = state.renderer.?.program_list.?.items[0];
+            state.renderer.?.program_idx = 0;
+            std.debug.print("current program:{d}\n", .{state.renderer.?.program_idx});
+        }
+        if (keyboard[c.SDL_SCANCODE_2]) {
+            if (state.renderer.?.program_list.?.items.len >= 2) {
+                state.renderer.?.program = state.renderer.?.program_list.?.items[1];
+                state.renderer.?.program_idx = 1;
+            }
+            std.debug.print("current program:{d}\n", .{state.renderer.?.program_idx});
+        }
+
         state.renderer.?.cam.move(delta);
     }
     return c.SDL_APP_CONTINUE;
@@ -1039,6 +1081,7 @@ fn sdlAppQuit(state: *State, result: anyerror!c.SDL_AppResult) void {
         c.SDL_DestroyWindow(state.window.?);
 
     c.SDL_Quit();
+    zstbi.deinit();
 
     state.allocator.destroy(state);
 }

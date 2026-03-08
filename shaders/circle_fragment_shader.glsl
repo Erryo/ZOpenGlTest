@@ -1,6 +1,6 @@
 #version 410 core
 in vec4 v_Color;
-in  uint v_TextureId;
+flat in uint v_TextureId;
 in vec2 v_TextureCoords;
 
 out vec4 f_Color;
