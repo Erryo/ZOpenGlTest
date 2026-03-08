@@ -19,6 +19,10 @@
             .url = "git+https://github.com/griush/zm#019dfc79378eb3c1314f0e7a999f9102dd59bd51",
             .hash = "zm-0.5.0-cLX-WXTdAACNTDbatSmwFKqWLzOJ62VFD_KMmFaH8HQT",
         },
+        .zstbi = .{
+            .url = "git+https://github.com/zig-gamedev/zstbi#664305dd52640be15cbebd7cd73d1199679933e1",
+            .hash = "zstbi-0.11.0-dev-L0Ea_2yVBwA4uh-tHfgdhZcQaWRoZVYlNGs4Dl_WTeuR",
+        },
     },
     .paths = .{
         "invalid", // Not intended for consumption as a package

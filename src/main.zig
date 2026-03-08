@@ -180,6 +180,11 @@ const Program = struct {
     }
 };
 
+const GLError = error{
+    InvalidAttributeLocation,
+    UnknownError,
+};
+
 const Batch = struct {
     no_verts: u32 = 0,
     flushed: bool = false,
@@ -208,13 +213,17 @@ const Batch = struct {
 
         gl.BindBuffer(gl.ARRAY_BUFFER, batch.vbo.?);
         try check_gl_error();
+        errdefer check_gl_error() catch {};
 
         {
-            const attrib_location: c_uint = @intCast(gl.GetAttribLocation(program.program.?, "a_Position"));
-            gl.EnableVertexAttribArray(attrib_location);
+            const location = gl.GetAttribLocation(program.program.?, "a_Position");
+            if (location < 0) return GLError.InvalidAttributeLocation;
+            const position_location: c_uint = @intCast(location);
+
+            gl.EnableVertexAttribArray(position_location);
             gl.VertexAttribPointer(
                 // zig fmt: off
-                attrib_location,
+                position_location,
                 @typeInfo(@FieldType(zm.Vec3f, "data")).array.len,
                 gl.FLOAT,
                 gl.FALSE,
@@ -222,14 +231,18 @@ const Batch = struct {
                 @offsetOf(Vertex, "position"));
                 // zig fmt: on
         }
+
         try check_gl_error(); // no error
         {
-            const attrib_location: c_uint = @intCast(gl.GetAttribLocation(program.program.?, "a_Color"));
-            gl.EnableVertexAttribArray(attrib_location);
+            const location = gl.GetAttribLocation(program.program.?, "a_Color");
+            if (location < 0) return GLError.InvalidAttributeLocation;
+            const color_location: c_uint = @intCast(location);
+
+            gl.EnableVertexAttribArray(color_location);
             try check_gl_error(); // no error
             gl.VertexAttribPointer(
                 // zig fmt: off
-                attrib_location,
+                color_location,
                 @typeInfo(@FieldType(zm.Vec3f, "data")).array.len,
                 gl.FLOAT,
                 gl.FALSE,
@@ -238,7 +251,42 @@ const Batch = struct {
                 // zig fmt: on
         }
 
-        try check_gl_error(); // error 1282
+        try check_gl_error(); // no error
+        {
+            const location = gl.GetAttribLocation(program.program.?, "a_TextureId");
+            if (location < 0) return GLError.InvalidAttributeLocation;
+            const texture_id_location: c_uint = @intCast(location);
+
+            gl.EnableVertexAttribArray(texture_id_location);
+            try check_gl_error(); // no error
+            gl.VertexAttribIPointer(
+                // zig fmt: off
+                texture_id_location,
+                1,
+                gl.UNSIGNED_INT,
+                @sizeOf(Vertex),
+                @offsetOf(Vertex, "texture_id"));
+                // zig fmt: on
+        }
+        try check_gl_error(); // no error
+        {
+            const location = gl.GetAttribLocation(program.program.?, "a_TextureCoords");
+            if (location < 0) return GLError.InvalidAttributeLocation;
+            const texture_coord_location: c_uint = @intCast(location);
+            gl.EnableVertexAttribArray(texture_coord_location);
+            try check_gl_error(); // no error
+            gl.VertexAttribPointer(
+                // zig fmt: off
+                texture_coord_location,
+                @typeInfo(@FieldType(zm.Vec2f, "data")).array.len,
+                gl.FLOAT,
+                gl.FALSE,
+                @sizeOf(Vertex),
+                @offsetOf(Vertex, "texture_coords"));
+        // zig fmt: on
+        }
+
+        try check_gl_error();
         batch.drawables = try DrawableList.initCapacity(allocator, 2);
 
         batch.verts = try VertexList.initCapacity(allocator, 6);
@@ -718,6 +766,8 @@ fn rotation_rh(axis: zm.Vec3f, angle_rads: f32) zm.Mat4f {
 const Vertex = struct {
     position: zm.Vec3f,
     color: zm.Vec3f,
+    texture_id: u8 = 0,
+    texture_coords: zm.Vec2f = .{ .data = .{ 0, 0 } },
 };
 
 fn create_graphics_pipeline(vertex_shader_src: []const u8, fragment_shader_src: []const u8) !c_uint {
@@ -1064,7 +1114,7 @@ fn check_gl_error() !void {
         errored = true;
         std.debug.print("err:{d}\n", .{err});
     }
-    return if (errored) error.GlError else {};
+    return if (errored) GLError.UnknownError else {};
 }
 
 const ErrorStore = struct {
